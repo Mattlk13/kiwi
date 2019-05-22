@@ -54,7 +54,7 @@ class BootLoaderConfigIsoLinux(BootLoaderConfigBase):
         if not firmware.efi_mode() and self.arch == 'ix86':
             raise KiwiBootLoaderIsoLinuxPlatformError(
                 'isolinux not supported for arch: {0}'.format(
-                    arch
+                    self.arch
                 )
             )
 

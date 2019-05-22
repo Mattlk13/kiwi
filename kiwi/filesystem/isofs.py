@@ -15,9 +15,6 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
-import platform
-import re
-
 # project
 from kiwi.filesystem.base import FileSystemBase
 from kiwi.iso_tools.iso import Iso
