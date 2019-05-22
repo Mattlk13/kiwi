@@ -27,6 +27,7 @@ from kiwi.logger import log
 from kiwi.path import Path
 from kiwi.defaults import Defaults
 from kiwi.command import Command
+from kiwi.firmware import FirmWare
 
 from kiwi.exceptions import (
     KiwiTemplateError,
@@ -45,14 +46,16 @@ class BootLoaderConfigIsoLinux(BootLoaderConfigBase):
         :param dict custom_args: custom isolinux config arguments
         """
         self.custom_args = custom_args
-        arch = platform.machine()
-        if arch == 'x86_64':
-            self.arch = arch
-        elif arch == 'i686' or arch == 'i586':
+        firmware = FirmWare(self.xml_state)
+        self.arch = platform.machine()
+        if self.arch == 'i686' or self.arch == 'i586':
             self.arch = 'ix86'
-        else:
+
+        if not firmware.efi_mode() and self.arch == 'ix86':
             raise KiwiBootLoaderIsoLinuxPlatformError(
-                'host architecture %s not supported for isolinux setup' % arch
+                'isolinux not supported for arch: {0}'.format(
+                    arch
+                )
             )
 
         self.install_volid = self.xml_state.build_type.get_volid() or \
