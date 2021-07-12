@@ -19,9 +19,11 @@ import os
 import glob
 from configparser import ConfigParser
 from tempfile import NamedTemporaryFile
+from typing import List, Dict
 
 # project
 from kiwi.defaults import Defaults
+from kiwi.command import Command
 from kiwi.repository.base import RepositoryBase
 from kiwi.path import Path
 from kiwi.utils.rpm_database import RpmDataBase
@@ -37,7 +39,8 @@ class RepositoryDnf(RepositoryBase):
     :param dict command_env: customized os.environ for dnf
     :param str runtime_dnf_config: instance of :class:`ConfigParser`
     """
-    def post_init(self, custom_args=None):
+
+    def post_init(self, custom_args: List = []) -> None:
         """
         Post initialization method
 
@@ -48,8 +51,8 @@ class RepositoryDnf(RepositoryBase):
         """
         self.custom_args = custom_args
         self.exclude_docs = False
-        if not custom_args:
-            self.custom_args = []
+        self.locale = None
+        self.target_arch = None
 
         # extract custom arguments not used in dnf call
         if 'exclude_docs' in self.custom_args:
@@ -62,13 +65,18 @@ class RepositoryDnf(RepositoryBase):
         else:
             self.gpg_check = '0'
 
-        self.locale = list(
-            item for item in self.custom_args if '_install_langs' in item
-        )
+        for argument in self.custom_args:
+            if '_install_langs' in argument:
+                self.locale = argument
+            elif '_target_arch' in argument:
+                self.target_arch = argument
         if self.locale:
-            self.custom_args.remove(self.locale[0])
+            self.custom_args.remove(self.locale)
+        if self.target_arch:
+            self.custom_args.remove(self.target_arch)
+            self.target_arch = self.target_arch.split('%')[1]
 
-        self.repo_names = []
+        self.repo_names: List = []
 
         # dnf support is based on creating repo files which contains
         # path names to the repo and its cache. In order to allow a
@@ -80,7 +88,8 @@ class RepositoryDnf(RepositoryBase):
         self.shared_dnf_dir = {
             'reposd-dir': manager_base + '/repos',
             'cache-dir': manager_base + '/cache',
-            'pluginconf-dir': manager_base + '/pluginconf'
+            'pluginconf-dir': manager_base + '/pluginconf',
+            'vars-dir': manager_base + '/vars'
         }
 
         self.runtime_dnf_config_file = NamedTemporaryFile(
@@ -88,7 +97,7 @@ class RepositoryDnf(RepositoryBase):
         )
 
         self.dnf_args = [
-            '-c', self.runtime_dnf_config_file.name, '-y'
+            '--config', self.runtime_dnf_config_file.name, '-y'
         ] + self.custom_args
 
         self.command_env = self._create_dnf_runtime_environment()
@@ -98,7 +107,7 @@ class RepositoryDnf(RepositoryBase):
         self._create_runtime_plugin_config_parser()
         self._write_runtime_config()
 
-    def setup_package_database_configuration(self):
+    def setup_package_database_configuration(self) -> None:
         """
         Setup rpm macros for bootstrapping and image building
 
@@ -112,7 +121,7 @@ class RepositoryDnf(RepositoryBase):
             self.root_dir, Defaults.get_custom_rpm_image_macro_name()
         )
         if self.locale:
-            rpmdb.set_macro_from_string(self.locale[0])
+            rpmdb.set_macro_from_string(self.locale)
         rpmdb.write_config()
 
         rpmdb = RpmDataBase(self.root_dir)
@@ -120,8 +129,34 @@ class RepositoryDnf(RepositoryBase):
             rpmdb.link_database_to_host_path()
         else:
             rpmdb.set_database_to_host_path()
+        # SUSE compat code:
+        #
+        # Manually adding the compat link /var/lib/rpm that points to the
+        # rpmdb location as it is configured in the host rpm setup. DNF makes
+        # use of the host setup to bootstrap or to read the signing keys
+        # from the rpm database setup provisioned by rpm itself (macro level).
+        # It assumes the host setup is the default for the system being built.
+        #
+        # For SUSE this is causing a mismatch as the host setup is not the RPM
+        # default (/var/lib/rpm) and SUSE distros proactively relocate the rpm
+        # database from the default location to a custom one when the
+        # rpm package and related macros are installed for the first time.
+        rpmdb.init_database()
+        image_rpm_compat_link = '/var/lib/rpm'
+        host_rpm_dbpath = rpmdb.rpmdb_host.expand_query('%_dbpath')
+        if host_rpm_dbpath != image_rpm_compat_link:
+            Path.create(
+                self.root_dir + os.path.dirname(image_rpm_compat_link)
+            )
+            Command.run(
+                [
+                    'ln', '-s', '--no-target-directory',
+                    ''.join(['../..', host_rpm_dbpath]),
+                    self.root_dir + image_rpm_compat_link
+                ], raise_on_error=False
+            )
 
-    def use_default_location(self):
+    def use_default_location(self) -> None:
         """
         Setup dnf repository operations to store all data
         in the default places
@@ -132,11 +167,13 @@ class RepositoryDnf(RepositoryBase):
             self.root_dir + '/var/cache/dnf'
         self.shared_dnf_dir['pluginconf-dir'] = \
             self.root_dir + '/etc/dnf/plugins'
+        self.shared_dnf_dir['vars-dir'] = \
+            self.root_dir + '/etc/dnf/vars'
         self._create_runtime_config_parser()
         self._create_runtime_plugin_config_parser()
         self._write_runtime_config()
 
-    def runtime_config(self):
+    def runtime_config(self) -> Dict:
         """
         dnf runtime configuration and environment
 
@@ -150,25 +187,29 @@ class RepositoryDnf(RepositoryBase):
         }
 
     def add_repo(
-        self, name, uri, repo_type='rpm-md',
-        prio=None, dist=None, components=None,
-        user=None, secret=None, credentials_file=None,
-        repo_gpgcheck=None, pkg_gpgcheck=None
-    ):
+        self, name: str, uri: str, repo_type: str = 'rpm-md',
+        prio: int = None, dist: str = None, components: str = None,
+        user: str = None, secret: str = None, credentials_file: str = None,
+        repo_gpgcheck: bool = False, pkg_gpgcheck: bool = False,
+        sourcetype: str = None, use_for_bootstrap: bool = False
+    ) -> None:
         """
         Add dnf repository
 
         :param str name: repository base file name
         :param str uri: repository URI
-        :param repo_type: repostory type name
+        :param str repo_type: repostory type name
         :param int prio: dnf repostory priority
-        :param dist: unused
-        :param components: unused
-        :param user: unused
-        :param secret: unused
-        :param credentials_file: unused
+        :param str dist: unused
+        :param str components: unused
+        :param str user: unused
+        :param str secret: unused
+        :param str credentials_file: unused
         :param bool repo_gpgcheck: enable repository signature validation
         :param bool pkg_gpgcheck: enable package signature validation
+        :param str sourcetype:
+            source type, one of 'baseurl', 'metalink' or 'mirrorlist'
+        :param bool use_for_bootstrap: unused
         """
         repo_file = self.shared_dnf_dir['reposd-dir'] + '/' + name + '.repo'
         self.repo_names.append(name + '.repo')
@@ -181,24 +222,30 @@ class RepositoryDnf(RepositoryBase):
             name, 'name', name
         )
         repo_config.set(
-            name, 'baseurl', uri
+            name, sourcetype if sourcetype else 'baseurl', uri
         )
         if prio:
             repo_config.set(
                 name, 'priority', format(prio)
             )
-        if repo_gpgcheck is not None:
+        repo_config.set(
+            name, 'repo_gpgcheck', '1' if repo_gpgcheck else '0'
+        )
+        repo_config.set(
+            name, 'gpgcheck', '1' if pkg_gpgcheck else '0'
+        )
+        if Defaults.is_buildservice_worker():
+            # when building in the build service, modular metadata is
+            # inaccessible. In order to use modular content in the build
+            # service, we need to disable modular filtering, which is
+            # done with module_hotfixes option
             repo_config.set(
-                name, 'repo_gpgcheck', '1' if repo_gpgcheck else '0'
-            )
-        if pkg_gpgcheck is not None:
-            repo_config.set(
-                name, 'gpgcheck', '1' if pkg_gpgcheck else '0'
+                name, 'module_hotfixes', '1'
             )
         with open(repo_file, 'w') as repo:
             repo_config.write(repo)
 
-    def import_trusted_keys(self, signing_keys):
+    def import_trusted_keys(self, signing_keys: List) -> None:
         """
         Imports trusted keys into the image
 
@@ -208,7 +255,7 @@ class RepositoryDnf(RepositoryBase):
         for key in signing_keys:
             rpmdb.import_signing_key_to_image(key)
 
-    def delete_repo(self, name):
+    def delete_repo(self, name: str) -> None:
         """
         Delete dnf repository
 
@@ -218,14 +265,14 @@ class RepositoryDnf(RepositoryBase):
             self.shared_dnf_dir['reposd-dir'] + '/' + name + '.repo'
         )
 
-    def delete_all_repos(self):
+    def delete_all_repos(self) -> None:
         """
         Delete all dnf repositories
         """
         Path.wipe(self.shared_dnf_dir['reposd-dir'])
         Path.create(self.shared_dnf_dir['reposd-dir'])
 
-    def delete_repo_cache(self, name):
+    def delete_repo_cache(self, name: str) -> None:
         """
         Delete dnf repository cache
 
@@ -243,7 +290,7 @@ class RepositoryDnf(RepositoryBase):
         for dnf_cache_file in glob.iglob(dnf_cache_glob_pattern):
             Path.wipe(dnf_cache_file)
 
-    def cleanup_unused_repos(self):
+    def cleanup_unused_repos(self) -> None:
         """
         Delete unused dnf repositories
 
@@ -257,14 +304,14 @@ class RepositoryDnf(RepositoryBase):
             if repo_file not in self.repo_names:
                 Path.wipe(repos_dir + '/' + repo_file)
 
-    def _create_dnf_runtime_environment(self):
+    def _create_dnf_runtime_environment(self) -> Dict:
         for dnf_dir in list(self.shared_dnf_dir.values()):
             Path.create(dnf_dir)
         return dict(
             os.environ, LANG='C'
         )
 
-    def _create_runtime_config_parser(self):
+    def _create_runtime_config_parser(self) -> None:
         self.runtime_dnf_config = ConfigParser()
         self.runtime_dnf_config.add_section('main')
 
@@ -273,6 +320,9 @@ class RepositoryDnf(RepositoryBase):
         )
         self.runtime_dnf_config.set(
             'main', 'reposdir', self.shared_dnf_dir['reposd-dir']
+        )
+        self.runtime_dnf_config.set(
+            'main', 'varsdir', self.shared_dnf_dir['vars-dir']
         )
         self.runtime_dnf_config.set(
             'main', 'pluginconfpath', self.shared_dnf_dir['pluginconf-dir']
@@ -299,8 +349,15 @@ class RepositoryDnf(RepositoryBase):
             self.runtime_dnf_config.set(
                 'main', 'tsflags', 'nodocs'
             )
+        if self.target_arch:
+            self.runtime_dnf_config.set(
+                'main', 'arch', self.target_arch
+            )
+            self.runtime_dnf_config.set(
+                'main', 'ignorearch', '1'
+            )
 
-    def _create_runtime_plugin_config_parser(self):
+    def _create_runtime_plugin_config_parser(self) -> None:
         self.runtime_dnf_plugin_config = ConfigParser()
         self.runtime_dnf_plugin_config.add_section('main')
 
@@ -308,10 +365,11 @@ class RepositoryDnf(RepositoryBase):
             'main', 'enabled', '1'
         )
 
-    def _write_runtime_config(self):
+    def _write_runtime_config(self) -> None:
         with open(self.runtime_dnf_config_file.name, 'w') as config:
             self.runtime_dnf_config.write(config)
-        dnf_plugin_config_file = \
-            self.shared_dnf_dir['pluginconf-dir'] + '/priorities.conf'
-        with open(dnf_plugin_config_file, 'w') as pluginconfig:
-            self.runtime_dnf_plugin_config.write(pluginconfig)
+        if os.path.exists(self.shared_dnf_dir['pluginconf-dir']):
+            dnf_plugin_config_file = \
+                self.shared_dnf_dir['pluginconf-dir'] + '/priorities.conf'
+            with open(dnf_plugin_config_file, 'w') as pluginconfig:
+                self.runtime_dnf_plugin_config.write(pluginconfig)

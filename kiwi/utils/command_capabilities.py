@@ -16,14 +16,16 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import re
+import logging
 
 # project
 from kiwi.command import Command
-from kiwi.logger import log
 from kiwi.exceptions import KiwiCommandCapabilitiesError
 
+log = logging.getLogger('kiwi')
 
-class CommandCapabilities(object):
+
+class CommandCapabilities:
     """
     **Validation of command version flags or version**
 
@@ -101,10 +103,11 @@ class CommandCapabilities(object):
         try:
             command = Command.run(arguments)
             for line in command.output.splitlines():
-                match = re.search('[0-9]+(\.[0-9]+)*', line)
-                if match:
+                matches = re.findall(r'([0-9]+(\.[0-9]+)*)', line)
+                if matches:
+                    match = max([m[0] for m in matches], key=len)
                     version_info = tuple(
-                        int(elt) for elt in match.group(0).split('.')
+                        int(elt) for elt in match.split('.')
                     )
                     break
             if version_info is None:

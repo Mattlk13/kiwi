@@ -31,8 +31,10 @@ from kiwi.exceptions import (
     KiwiConfigFileNotFound
 )
 
+log = logging.getLogger('kiwi')
 
-class CliTask(object):
+
+class CliTask:
     """
     Base class for all task classes, loads the task and provides
     the interface to the command options and the XML description
@@ -47,15 +49,10 @@ class CliTask(object):
         * setup color output
     """
     def __init__(self, should_perform_task_setup=True):
-        from ..logger import log
-
         self.cli = Cli()
 
         # initialize runtime checker
         self.runtime_checker = None
-
-        # initialize runtime configuration
-        self.runtime_config = RuntimeConfig()
 
         # help requested
         self.cli.show_and_exit_on_help_request()
@@ -69,23 +66,32 @@ class CliTask(object):
         # get global args
         self.global_args = self.cli.get_global_args()
 
+        # initialize runtime configuration
+        self.runtime_config = RuntimeConfig()
+
         # initialize generic runtime check dicts
         self.checks_before_command_args = {
-            'check_minimal_required_preferences': [],
+            'check_image_version_provided': [],
             'check_efi_mode_for_disk_overlay_correctly_setup': [],
+            'check_initrd_selection_required': [],
             'check_boot_description_exists': [],
             'check_consistent_kernel_in_boot_and_system_image': [],
             'check_container_tool_chain_installed': [],
+            'check_volume_setup_defines_reserved_labels': [],
             'check_volume_setup_defines_multiple_fullsize_volumes': [],
             'check_volume_setup_has_no_root_definition': [],
             'check_volume_label_used_with_lvm': [],
+            'check_swap_name_used_with_lvm': [],
             'check_xen_uniquely_setup_as_server_or_guest': [],
             'check_mediacheck_installed': [],
             'check_dracut_module_for_live_iso_in_package_list': [],
             'check_dracut_module_for_disk_overlay_in_package_list': [],
             'check_dracut_module_for_disk_oem_in_package_list': [],
             'check_dracut_module_for_oem_install_in_package_list': [],
-            'check_architecture_supports_iso_firmware_setup': []
+            'check_architecture_supports_iso_firmware_setup': [],
+            'check_appx_naming_conventions_valid': [],
+            'check_syslinux_installed_if_isolinux_is_used': [],
+            'check_image_type_unique': []
         }
         self.checks_after_command_args = {
             'check_repositories_configured': [],
@@ -123,8 +129,6 @@ class CliTask(object):
         * :attr:`xml_state`
             Instance of XMLState, stateful data
         """
-        from ..logger import log
-
         log.info('Loading XML description')
         config_file = description_directory + '/config.xml'
         if not os.path.exists(config_file):
@@ -142,10 +146,10 @@ class CliTask(object):
                 'no XML description found in %s' % description_directory
             )
 
-        description = XMLDescription(
+        self.description = XMLDescription(
             config_file
         )
-        self.xml_data = description.load()
+        self.xml_data = self.description.load()
         self.config_file = config_file.replace('//', '/')
         self.xml_state = XMLState(
             self.xml_data,
@@ -174,15 +178,13 @@ class CliTask(object):
         Make sure to provide a common result for option values which
         separates the information in a comma separated list of values
 
+        :param str option: comma separated option string
+
         :return: common option value representation
-        :rtype: str
+
+        :rtype: list
         """
-        tokens = option.split(',', 3)
-        return [
-            self._pop_token(tokens) if len(tokens) else None for _ in range(
-                0, 4
-            )
-        ]
+        return self._ntuple_token(option, 4)
 
     def sextuple_token(self, option):
         """
@@ -191,15 +193,13 @@ class CliTask(object):
         Make sure to provide a common result for option values which
         separates the information in a comma separated list of values
 
+        :param str option: comma separated option string
+
         :return: common option value representation
-        :rtype: str
+
+        :rtype: list
         """
-        tokens = option.split(',', 5)
-        return [
-            self._pop_token(tokens) if len(tokens) else None for _ in range(
-                0, 6
-            )
-        ]
+        return self._ntuple_token(option, 6)
 
     def run_checks(self, checks):
         """
@@ -225,3 +225,24 @@ class CliTask(object):
             return False
         else:
             return token
+
+    def _ntuple_token(self, option, tuple_count):
+        """
+        Helper method for commandline options of the form --option a,b,c,d,e,f
+
+        Make sure to provide a common result for option values which
+        separates the information in a comma separated list of values
+
+        :param str option: comma separated option string
+        :param int tuple_count: divide into tuple_count tuples
+
+        :return: common option value representation
+
+        :rtype: list
+        """
+        tokens = option.split(',', tuple_count - 1)
+        return [
+            self._pop_token(tokens) if len(tokens) else None for _ in range(
+                0, tuple_count
+            )
+        ]

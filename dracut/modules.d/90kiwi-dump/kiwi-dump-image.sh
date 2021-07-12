@@ -10,7 +10,7 @@ type fetch_file >/dev/null 2>&1 || . /lib/kiwi-net-lib.sh
 #--------------------------------------
 function report_and_quit {
     local text_message="$1"
-    run_dialog --timeout 60 --msgbox "\"${text_message}\"" 5 70
+    run_dialog --timeout 60 --msgbox "\"${text_message}\"" 5 80
     if getargbool 0 rd.debug; then
         die "${text_message}"
     else
@@ -53,6 +53,7 @@ function get_disk_list {
         disk_id=${kiwi_devicepersistency}
     fi
     max_disk=0
+    kiwi_oemmultipath_scan=$(bool "${kiwi_oemmultipath_scan}")
     kiwi_oem_maxdisk=$(getarg rd.kiwi.oem.maxdisk=)
     if [ -n "${kiwi_oem_maxdisk}" ]; then
         max_disk=$(binsize_to_bytesize "${kiwi_oem_maxdisk}") || max_disk=0
@@ -71,11 +72,11 @@ function get_disk_list {
         # target should be a ramdisk on request. Thus instruct
         # lsblk to list only ramdisk devices (Major=1)
         blk_opts="-I 1 ${blk_opts}"
-    elif [ -n "${kiwi_oemmultipath_scan}" ];then
+    elif [ "${kiwi_oemmultipath_scan}" = "true" ];then
         scan_multipath_devices
     fi
     for disk_meta in $(
-        eval lsblk "${blk_opts}" | grep disk | tr ' ' ":"
+        eval lsblk "${blk_opts}" | grep -E "disk|raid" | tr ' ' ":"
     );do
         disk_device="$(echo "${disk_meta}" | cut -f1 -d:)"
         if [ "$(blkid "${disk_device}" -s LABEL -o value)" = \
@@ -137,7 +138,7 @@ function get_selected_disk {
         local count=0
         local device_index=0
         for entry in ${disk_list};do
-            if [ $((count % 3)) -eq 0 ];then
+            if [ $((count % 2)) -eq 0 ];then
                 device_array[${device_index}]=${entry}
                 device_index=$((device_index + 1))
             fi
@@ -352,14 +353,21 @@ function get_remote_image_source_files {
     mkdir -p "${metadata_dir}"
 
     image_uri=$(getarg rd.kiwi.install.image=)
+    # make sure the protocol type is tftp for metadata files. There is no need for
+    # complex protocol types on small files and for standard PXE boot operations
+    # only tftp can be guaranteed
     image_md5_uri=$(
-        echo "${image_uri}" | awk '{ gsub("\\.xz",".md5", $1); print $1 }'
+        echo "${image_uri}" | awk '{ gsub("\\.xz",".md5", $1); gsub("dolly:","tftp:", $1); print $1 }'
     )
     image_initrd_uri=$(
-        echo "${image_uri}" | awk '{ gsub("\\.xz",".initrd", $1); print $1 }'
+        echo "${image_uri}" | awk '{ gsub("\\.xz",".initrd", $1); gsub("dolly:","tftp:", $1); print $1 }'
     )
     image_kernel_uri=$(
-        echo "${image_uri}" | awk '{ gsub("\\.xz",".kernel", $1); print $1 }'
+        echo "${image_uri}" | awk '{ gsub("\\.xz",".kernel", $1); gsub("dolly:","tftp:", $1); print $1 }'
+    )
+    image_config_uri=$(
+        echo "${image_uri}" | \
+        awk '{ gsub("\\.xz",".config.bootoptions", $1); gsub("dolly:","tftp:", $1); print $1 }'
     )
 
     # if we can not access image_md5_uri, maybe network setup
@@ -384,34 +392,13 @@ function get_remote_image_source_files {
             "Failed to fetch ${image_initrd_uri}, see /tmp/fetch.info"
     fi
 
-    echo "${image_uri}|${image_md5}"
-}
+    if ! fetch_file "${image_config_uri}" > "/config.bootoptions"
+    then
+        report_and_quit \
+            "Failed to fetch ${image_config_uri}, see /tmp/fetch.info"
+    fi
 
-function boot_installed_system {
-    local boot_options
-    # if rd.kiwi.install.pass.bootparam is given, pass on most
-    # boot options to the kexec kernel
-    if getargbool 0 rd.kiwi.install.pass.bootparam; then
-        local cmdline
-        local option
-        read -r cmdline < /proc/cmdline
-        for option in ${cmdline}; do
-            case ${option} in
-                rd.kiwi.*) ;; # skip all rd.kiwi options, they might do harm
-                *)  boot_options="${boot_options}${option} ";;
-            esac
-        done
-    fi
-    boot_options="${boot_options}$(cat /config.bootoptions)"
-    if getargbool 0 rd.kiwi.debug; then
-        boot_options="${boot_options} rd.kiwi.debug"
-    fi
-    kexec -l /run/install/boot/*/loader/linux \
-        --initrd /run/install/initrd.system_image \
-        --command-line "${boot_options}"
-    if ! kexec -e; then
-        report_and_quit "Failed to kexec boot system"
-    fi
+    echo "${image_uri}|${image_md5}"
 }
 
 #======================================
@@ -440,15 +427,3 @@ else
 fi
 
 check_image_integrity "${image_target}"
-
-if getargbool 0 rd.kiwi.ramdisk; then
-    # For ramdisk deployment a kexec boot is not possible as it
-    # will wipe the contents of the ramdisk. Therefore we prepare
-    # the switch_root from this deployment initrd. Also see the
-    # unit generator: dracut-kiwi-ramdisk-generator
-    kpartx -s -a "${image_target}"
-else
-    # Standard deployment will use kexec to activate and boot the
-    # deployed system
-    boot_installed_system
-fi

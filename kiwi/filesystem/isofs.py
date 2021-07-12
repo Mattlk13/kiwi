@@ -16,20 +16,25 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
+from typing import List
 from textwrap import dedent
 
 # project
-from kiwi.logger import log
 from kiwi.filesystem.base import FileSystemBase
 from kiwi.iso_tools.iso import Iso
 from kiwi.iso_tools import IsoTools
+
+log = logging.getLogger('kiwi')
 
 
 class FileSystemIsoFs(FileSystemBase):
     """
     **Implements creation of iso filesystem**
     """
-    def create_on_file(self, filename, label=None, exclude=None):
+    def create_on_file(
+        self, filename: str, label: str = None, exclude: List[str] = None
+    ):
         """
         Create iso filesystem from data tree
 
@@ -38,14 +43,15 @@ class FileSystemIsoFs(FileSystemBase):
 
         :param string filename: result file path name
         :param string label: unused
-        :param string exclude: unused
+        :param list exclude: unused
         """
         meta_data = self.custom_args['meta_data']
         efi_mode = meta_data.get('efi_mode')
-        iso_tool = IsoTools(self.root_dir)
+        ofw_mode = meta_data.get('ofw_mode')
+        iso_tool = IsoTools.new(self.root_dir)
 
         iso = Iso(self.root_dir)
-        if not efi_mode:
+        if not efi_mode and not ofw_mode:
             iso.setup_isolinux_boot_path()
 
         if not iso_tool.has_iso_hybrid_capability():
@@ -58,7 +64,7 @@ class FileSystemIsoFs(FileSystemBase):
         iso_tool.create_iso(filename)
 
         if not iso_tool.has_iso_hybrid_capability():
-            if not efi_mode:
+            if not efi_mode and not ofw_mode:
                 hybrid_offset = iso.create_header_end_block(filename)
                 iso_tool.create_iso(
                     filename, hidden_files=[iso.header_end_name]

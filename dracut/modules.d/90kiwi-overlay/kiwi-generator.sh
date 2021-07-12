@@ -1,6 +1,7 @@
 #!/bin/bash
 
 type getarg >/dev/null 2>&1 || . /lib/dracut-lib.sh
+type getOverlayBaseDirectory >/dev/null 2>&1 || . /lib/kiwi-filesystem-lib.sh
 
 [ -z "${root}" ] && root=$(getarg root=)
 
@@ -8,30 +9,23 @@ if [ "${root%%:*}" = "overlay" ] ; then
     overlayroot=${root}
 fi
 
+# Generate sysroot unit only if overlay is requested
 [ "${overlayroot%%:*}" = "overlay" ] || exit 0
-
-case "${overlayroot}" in
-    overlay:UUID=*|UUID=*) \
-        root="${root#overlay:}"
-        root="${root//\//\\x2f}"
-        root="overlay:/dev/disk/by-uuid/${root#UUID=}"
-        rootok=1 ;;
-esac
-
-[ "${rootok}" != "1" ] && exit 0
 
 GENERATOR_DIR="$2"
 [ -z "$GENERATOR_DIR" ] && exit 1
 [ -d "$GENERATOR_DIR" ] || mkdir "$GENERATOR_DIR"
 
+OVERLAY_BASE="$(getOverlayBaseDirectory)"
 ROOTFLAGS="$(getarg rootflags)"
 {
     echo "[Unit]"
     echo "Before=initrd-root-fs.target"
+    echo "DefaultDependencies=no"
     echo "[Mount]"
     echo "Where=/sysroot"
     echo "What=OverlayOS_rootfs"
-    echo "Options=${ROOTFLAGS},lowerdir=/run/rootfsbase,upperdir=/run/overlayfs/rw,workdir=/run/overlayfs/work"
+    echo "Options=${ROOTFLAGS},lowerdir=${OVERLAY_BASE}/rootfsbase,upperdir=${OVERLAY_BASE}/overlayfs/rw,workdir=${OVERLAY_BASE}/overlayfs/work"
     echo "Type=overlay"
     _dev=OverlayOS_rootfs
 } > "$GENERATOR_DIR"/sysroot.mount

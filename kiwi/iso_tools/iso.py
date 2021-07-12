@@ -17,11 +17,11 @@
 #
 import os
 import struct
+import logging
 from collections import namedtuple
 
 # project
 from kiwi.iso_tools.cdrtools import IsoToolsCdrTools
-from kiwi.logger import log
 from kiwi.defaults import Defaults
 from kiwi.command import Command
 from kiwi.utils.codec import Codec
@@ -31,8 +31,10 @@ from kiwi.exceptions import (
     KiwiCommandError
 )
 
+log = logging.getLogger('kiwi')
 
-class Iso(object):
+
+class Iso:
     """
     **Implements helper methods around the creation of ISO filesystems**
 
@@ -312,7 +314,7 @@ class Iso(object):
         )
         if not os.path.exists(loader_file):
             raise KiwiIsoLoaderError(
-                'No isolinux loader %s found'.format(loader_file)
+                'No isolinux loader {} found'.format(loader_file)
             )
         try:
             Command.run(

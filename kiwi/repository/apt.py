@@ -16,13 +16,18 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
+from typing import List, Dict
 
 # project
 from kiwi.repository.template.apt import PackageManagerTemplateAptGet
 from kiwi.repository.base import RepositoryBase
 from kiwi.path import Path
+from kiwi.command import Command
+
+log = logging.getLogger('kiwi')
 
 
 class RepositoryApt(RepositoryBase):
@@ -37,7 +42,8 @@ class RepositoryApt(RepositoryBase):
     :param manager_base: shared location for apt-get repodata between
         host and image
     """
-    def post_init(self, custom_args=None):
+
+    def post_init(self, custom_args: List = []) -> None:
         """
         Post initialization method
 
@@ -48,9 +54,7 @@ class RepositoryApt(RepositoryBase):
         """
         self.custom_args = custom_args
         self.exclude_docs = False
-        self.signing_keys = []
-        if not custom_args:
-            self.custom_args = []
+        self.signing_keys: List = []
 
         # extract custom arguments used for apt config only
         if 'exclude_docs' in self.custom_args:
@@ -63,10 +67,11 @@ class RepositoryApt(RepositoryBase):
         else:
             self.unauthenticated = 'true'
 
-        self.distribution = None
-        self.distribution_path = None
-        self.repo_names = []
-        self.components = []
+        self.distribution: str = ''
+        self.distribution_path: str = ''
+        self.debootstrap_repo_set = False
+        self.repo_names: List = []
+        self.components: List = []
 
         # apt-get support is based on creating a sources file which
         # contains path names to the repo and its cache. In order to
@@ -79,6 +84,7 @@ class RepositoryApt(RepositoryBase):
             'sources-dir': self.manager_base + '/sources.list.d',
             'preferences-dir': self.manager_base + '/preferences.d'
         }
+        self.keyring = '{}/trusted.gpg'.format(self.manager_base)
 
         self.runtime_apt_get_config_file = NamedTemporaryFile(
             dir=self.root_dir
@@ -94,7 +100,7 @@ class RepositoryApt(RepositoryBase):
         self.apt_conf = PackageManagerTemplateAptGet()
         self._write_runtime_config()
 
-    def setup_package_database_configuration(self):
+    def setup_package_database_configuration(self) -> None:
         """
         Setup package database configuration
 
@@ -102,7 +108,7 @@ class RepositoryApt(RepositoryBase):
         """
         pass
 
-    def use_default_location(self):
+    def use_default_location(self) -> None:
         """
         Setup apt-get repository operations to store all data
         in the default places
@@ -111,10 +117,10 @@ class RepositoryApt(RepositoryBase):
         self.shared_apt_get_dir['sources-dir'] = \
             os.sep.join([self.manager_base, 'sources.list.d'])
         self.shared_apt_get_dir['preferences-dir'] = \
-            os.sep.join([self.root_dir, 'preferences.d'])
+            os.sep.join([self.manager_base, 'preferences.d'])
         self._write_runtime_config(system_default=True)
 
-    def runtime_config(self):
+    def runtime_config(self) -> Dict:
         """
         apt-get runtime configuration and environment
         """
@@ -126,25 +132,29 @@ class RepositoryApt(RepositoryBase):
         }
 
     def add_repo(
-        self, name, uri, repo_type='deb',
-        prio=None, dist=None, components=None,
-        user=None, secret=None, credentials_file=None,
-        repo_gpgcheck=None, pkg_gpgcheck=None
-    ):
+        self, name: str, uri: str, repo_type: str = 'deb',
+        prio: int = None, dist: str = None, components: str = None,
+        user: str = None, secret: str = None, credentials_file: str = None,
+        repo_gpgcheck: bool = None, pkg_gpgcheck: bool = None,
+        sourcetype: str = None, use_for_bootstrap: bool = False
+    ) -> None:
         """
         Add apt_get repository
 
         :param str name: repository base file name
         :param str uri: repository URI
-        :param repo_type: unused
+        :param str repo_type: unused
         :param int prio: unused
-        :param dist: distribution name for non flat deb repos
-        :param components: distribution categories
-        :param user: unused
-        :param secret: unused
-        :param credentials_file: unused
+        :param str dist: distribution name for non flat deb repos
+        :param str components: distribution categories
+        :param str user: unused
+        :param str secret: unused
+        :param str credentials_file: unused
         :param bool repo_gpgcheck: enable repository signature validation
-        :param pkg_gpgcheck: unused
+        :param bool pkg_gpgcheck: unused
+        :param str sourcetype: unused
+        :param bool use_for_bootstrap: use this repository for the
+            debootstrap call
         """
         list_file = '/'.join(
             [self.shared_apt_get_dir['sources-dir'], name + '.list']
@@ -162,7 +172,9 @@ class RepositoryApt(RepositoryBase):
         self._add_components(components)
         with open(list_file, 'w') as repo:
             if repo_gpgcheck is False:
-                repo_line = 'deb [trusted=yes check-valid-until=no] {0}'.format(uri)
+                repo_line = 'deb [trusted=yes check-valid-until=no] {0}'.format(
+                    uri
+                )
             else:
                 repo_line = 'deb {0}'.format(uri)
             if not dist:
@@ -176,8 +188,10 @@ class RepositoryApt(RepositoryBase):
             else:
                 # create a debian distributon repository setup for the
                 # specified distributon name and components
-                self.distribution = dist
-                self.distribution_path = uri
+                if not self.debootstrap_repo_set:
+                    self.distribution = dist
+                    self.distribution_path = uri
+                    self.debootstrap_repo_set = use_for_bootstrap
                 repo_line += ' {0} {1}\n'.format(dist, components)
             repo.write(repo_line)
         if prio:
@@ -198,17 +212,36 @@ class RepositoryApt(RepositoryBase):
                     'Pin-Priority: {0}{1}'.format(prio, os.linesep)
                 )
 
-    def import_trusted_keys(self, signing_keys):
+    def import_trusted_keys(self, signing_keys: List) -> None:
         """
-        Keeps trusted keys so that later on they can be imported into
-        the image by the PackageManager instance.
+        Creates a new keyring including provided keys
 
         :param list signing_keys: list of the key files to import
         """
+        keybox = '{}/trusted-keybox.gpg'.format(self.manager_base)
+        gpg_args = [
+            'gpg', '--no-options', '--no-default-keyring',
+            '--no-auto-check-trustdb', '--trust-model', 'always',
+            '--keyring', keybox
+        ]
+        if os.path.exists(self.keyring):
+            os.unlink(self.keyring)
+        if os.path.exists(keybox):
+            os.unlink(keybox)
         for key in signing_keys:
-            self.signing_keys.append(key)
+            Command.run(gpg_args + ['--import', '--ignore-time-conflict', key])
+        if os.path.exists(keybox):
+            Command.run(
+                gpg_args + ['--export', '--yes', '--output', self.keyring]
+            )
+            os.unlink(keybox)
+            log.info('Custom keyring for APT created: {}'.format(self.keyring))
+            log.warning(
+                'The keyring is only available at build time. '
+                'It will not be part of the resulting image'
+            )
 
-    def delete_repo(self, name):
+    def delete_repo(self, name: str) -> None:
         """
         Delete apt-get repository
 
@@ -218,14 +251,14 @@ class RepositoryApt(RepositoryBase):
             self.shared_apt_get_dir['sources-dir'] + '/' + name + '.list'
         )
 
-    def delete_all_repos(self):
+    def delete_all_repos(self) -> None:
         """
         Delete all apt-get repositories
         """
         Path.wipe(self.shared_apt_get_dir['sources-dir'])
         Path.create(self.shared_apt_get_dir['sources-dir'])
 
-    def delete_repo_cache(self, name):
+    def delete_repo_cache(self, name: str) -> None:
         """
         Delete apt-get repository cache
 
@@ -240,7 +273,7 @@ class RepositoryApt(RepositoryBase):
         for cache_file in ['archives', 'pkgcache.bin', 'srcpkgcache.bin']:
             Path.wipe(os.sep.join([self.manager_base, cache_file]))
 
-    def cleanup_unused_repos(self):
+    def cleanup_unused_repos(self) -> None:
         """
         Delete unused apt_get repositories
 
@@ -254,19 +287,19 @@ class RepositoryApt(RepositoryBase):
             if repo_file not in self.repo_names:
                 Path.wipe(repos_dir + '/' + repo_file)
 
-    def _add_components(self, components):
+    def _add_components(self, components: str) -> None:
         for component in components.split():
             if component not in self.components:
                 self.components.append(component)
 
-    def _create_apt_get_runtime_environment(self):
+    def _create_apt_get_runtime_environment(self) -> Dict:
         for apt_get_dir in list(self.shared_apt_get_dir.values()):
             Path.create(apt_get_dir)
         return dict(
             os.environ, LANG='C', DEBIAN_FRONTEND='noninteractive'
         )
 
-    def _write_runtime_config(self, system_default=False):
+    def _write_runtime_config(self, system_default: bool = False) -> None:
         parameters = {
             'apt_shared_base': self.manager_base,
             'unauthenticated': self.unauthenticated

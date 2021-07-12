@@ -22,7 +22,7 @@ from kiwi.exceptions import (
 )
 
 
-class DeviceProvider(object):
+class DeviceProvider:
     """
     **Base class for any class providing storage devices**
     """
@@ -37,7 +37,7 @@ class DeviceProvider(object):
             'No storage device(s) provided'
         )
 
-    def get_uuid(self, device):
+    def get_uuid(self, device: str) -> str:
         """
         UUID of device
 
@@ -52,7 +52,7 @@ class DeviceProvider(object):
         )
         return uuid_call.output.rstrip('\n')
 
-    def get_byte_size(self, device):
+    def get_byte_size(self, device: str) -> int:
         """
         Size of device in bytes
 
@@ -67,7 +67,7 @@ class DeviceProvider(object):
         )
         return int(blockdev_call.output.rstrip('\n'))
 
-    def is_loop(self):
+    def is_loop(self) -> bool:
         """
         Check if device provider is loop based
 

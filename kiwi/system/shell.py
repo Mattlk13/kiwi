@@ -16,18 +16,22 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 from tempfile import NamedTemporaryFile
+from typing import Optional, Any, List
+from collections.abc import Iterable
 
 # project
 from kiwi.command import Command
 from kiwi.defaults import Defaults
 
+from kiwi.exceptions import KiwiShellVariableValueError
 
-class Shell(object):
+
+class Shell:
     """
     **Special character handling for shell evaluated code**
     """
     @staticmethod
-    def quote(message):
+    def quote(message: str) -> str:
         """
         Quote characters which have a special meaning for bash
         but should be used as normal characters. actually I had
@@ -48,16 +52,16 @@ class Shell(object):
         return message
 
     @staticmethod
-    def quote_key_value_file(filename):
+    def quote_key_value_file(filename: str) -> List[str]:
         """
         Quote given input file which has to be of the form
         key=value to be able to become sourced by the shell
 
         :param str filename: file path name
 
-        :return: quoted text
+        :return: list of quoted text
 
-        :rtype: str
+        :rtype: List[str]
         """
         temp_copy = NamedTemporaryFile()
         Command.run(['cp', filename, temp_copy.name])
@@ -66,7 +70,7 @@ class Shell(object):
             return quoted.read().splitlines()
 
     @staticmethod
-    def run_common_function(name, parameters):
+    def run_common_function(name: str, parameters: List[str]) -> None:
         """
         Run a function implemented in config/functions.sh
 
@@ -84,3 +88,35 @@ class Shell(object):
                 )
             ]
         )
+
+    @staticmethod
+    def format_to_variable_value(value: Optional[Any]) -> str:
+        """
+        Format given variable value to return a string value
+        representation that can be sourced by shell scripts.
+        If the provided value is not representable as a string
+        (list, dict, tuple etc) an exception is raised
+
+        :param any value: a python variable
+
+        :raises KiwiShellVariableValueError: if value is an iterable
+
+        :return: string value representation
+
+        :rtype: str
+        """
+        if value is None:
+            return ''
+        if isinstance(value, bool):
+            return format(value).lower()
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bytes):
+            return format(value.decode())
+        if isinstance(value, Iterable):
+            # we will have a hard time to turn an iterable (list, dict ...)
+            # into a useful string
+            raise KiwiShellVariableValueError(
+                'Value cannot be {0}'.format(type(value))
+            )
+        return format(value)

@@ -47,13 +47,6 @@ class KiwiArchiveTarError(KiwiError):
     """
 
 
-class KiwiBootImageDumpError(KiwiError):
-    """
-    Exception raised if an instance of BootImage* can not be
-    serialized on as file via pickle dump
-    """
-
-
 class KiwiBootImageSetupError(KiwiError):
     """
     Exception raised if an unsupported initrd system type is used.
@@ -161,7 +154,7 @@ class KiwiCommandError(KiwiError):
     """
 
 
-class KiwiCommandNotFound(KiwiCommandError):
+class KiwiCommandNotFound(KiwiError):
     """
     Exception raised if any executable command cannot be found in
     the evironment PATH variable.
@@ -195,6 +188,12 @@ class KiwiConfigFileNotFound(KiwiError):
     """
 
 
+class KiwiConfigFileFormatNotSupported(KiwiError):
+    """
+    Exception raised if kiwi description file format is not supported.
+    """
+
+
 class KiwiContainerSetupError(KiwiError):
     """
     Exception raised if an error in the creation of the
@@ -220,13 +219,6 @@ class KiwiDebootstrapError(KiwiError):
     """
     Exception raised if not enough user data to call debootstrap
     were provided or the debootstrap has failed.
-    """
-
-
-class KiwiDescriptionConflict(KiwiError):
-    """
-    Exception raised if both, a description file and xml_content
-    is provided
     """
 
 
@@ -494,10 +486,10 @@ class KiwiProfileNotFound(KiwiError):
     """
 
 
-class KiwiPxeBootImageError(KiwiError):
+class KiwiKisBootImageError(KiwiError):
     """
     Exception raised if a required boot file e.g the kernel could
-    not be found in the process of building a pxe image.
+    not be found in the process of building a kis image.
     """
 
 
@@ -571,6 +563,13 @@ class KiwiRpmDirNotRemoteError(KiwiError):
     """
 
 
+class KiwiRuntimeConfigFileError(KiwiError):
+    """
+    Exception raised if the provided custom runtime config
+    file could not be found
+    """
+
+
 class KiwiRuntimeConfigFormatError(KiwiError):
     """
     Exception raised if the expected format in the yaml KIWI
@@ -604,6 +603,18 @@ class KiwiSatSolverPluginError(KiwiError):
     Exception raised if the python solv module failed to load.
     The solv module is provided by SUSE's rpm package python-solv
     and provides a python binding to the libsolv C library
+    """
+
+
+class KiwiAnyMarkupPluginError(KiwiError):
+    """
+    Exception raised if the python anymarkup module failed to load.
+    """
+
+
+class KiwiMarkupConversionError(KiwiError):
+    """
+    Exception raised if the markup format conversion is not possible.
     """
 
 
@@ -782,4 +793,11 @@ class KiwiBuildahError(KiwiError):
 class KiwiFileAccessError(KiwiError):
     """
     Exception raised if accessing a file or its metadata failed
+    """
+
+
+class KiwiShellVariableValueError(KiwiError):
+    """
+    Exception raised if a given python value cannot be converted
+    into a string representation for use in shell scripts
     """

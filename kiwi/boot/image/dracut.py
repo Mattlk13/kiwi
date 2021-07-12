@@ -16,101 +16,214 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
-import re
-from collections import namedtuple
+import logging
+from typing import (
+    List, Optional, Dict
+)
 
 # project
-from kiwi.logger import log
 from kiwi.command import Command
 from kiwi.system.kernel import Kernel
 from kiwi.boot.image.base import BootImageBase
 from kiwi.defaults import Defaults
 from kiwi.system.profile import Profile
 from kiwi.system.setup import SystemSetup
-from kiwi.path import Path
+from kiwi.system.identifier import SystemIdentifier
+from kiwi.mount_manager import MountManager
 
-from kiwi.exceptions import KiwiDiskBootImageError
+log = logging.getLogger('kiwi')
 
 
 class BootImageDracut(BootImageBase):
     """
     **Implements creation of dracut boot(initrd) images.**
     """
-    def post_init(self):
+    @staticmethod
+    def has_initrd_support() -> bool:
+        """
+        This instance supports initrd preparation and creation
+        """
+        return True
+
+    def post_init(self) -> None:
         """
         Post initialization method
 
         Initialize empty list of dracut caller options
         """
-        self.dracut_options = []
-        self.included_files = []
-        self.included_files_install = []
+        self.device_mount: Optional[MountManager] = None
+        self.proc_mount: Optional[MountManager] = None
 
-    def include_file(self, filename, install_media=False):
+        # signing keys are only taken into account on install of
+        # packages. As dracut runs from a pre defined root directory,
+        # no signing keys will be used in the process of creating
+        # an initrd with dracut
+        self.signing_keys = None
+
+        # Initialize empty list of dracut caller options
+        self.dracut_options: List[str] = []
+        self.included_files: List[str] = []
+        self.modules: List[str] = []
+        self.add_modules: List[str] = []
+        self.omit_modules: List[str] = []
+        self.available_modules = self._get_modules()
+
+    def include_file(self, filename: str, install_media: bool = False) -> None:
         """
         Include file to dracut boot image
 
-        :param string filename: file path name
+        :param str filename: file path name
+        :param bool install_media: unused
         """
         self.included_files.append('--install')
         self.included_files.append(filename)
-        if install_media:
-            self.included_files_install.append('--install')
-            self.included_files_install.append(filename)
 
-    def prepare(self):
+    def include_module(self, module: str, install_media: bool = False) -> None:
+        """
+        Include module to dracut boot image
+
+        :param str module: module to include
+        :param bool install_media: unused
+        """
+        warn_msg = 'module "{0}" not included in initrd'.format(module)
+        if self._module_available(module):
+            if module not in self.add_modules:
+                self.add_modules.append(module)
+        else:
+            log.warning(warn_msg)
+
+    def omit_module(self, module: str, install_media: bool = False) -> None:
+        """
+        Omit module to dracut boot image
+
+        :param str module: module to omit
+        :param bool install_media: unused
+        """
+        if module not in self.omit_modules:
+            self.omit_modules.append(module)
+
+    def set_static_modules(
+        self, modules: List[str], install_media: bool = False
+    ) -> None:
+        """
+        Set static dracut modules list for boot image
+
+        :param list modules: list of the modules to include
+        :param bool install_media: unused
+        """
+        self.modules = modules
+
+    def write_system_config_file(
+        self, config: Dict, config_file: Optional[str] = None
+    ) -> None:
+        """
+        Writes modules configuration into a dracut configuration file.
+
+        :param dict config: a dictionary containing the modules to add and omit
+        :param str conf_file: configuration file to write
+        """
+        dracut_config = []
+        if not config_file:
+            config_file = os.path.normpath(
+                self.boot_root_directory + Defaults.get_dracut_conf_name()
+            )
+        if config.get('modules'):
+            modules = [
+                module for module in config['modules']
+                if self._module_available(module)
+            ]
+            dracut_config.append(
+                'add_dracutmodules+=" {0} "\n'.format(' '.join(modules))
+            )
+        if config.get('omit_modules'):
+            dracut_config.append(
+                'omit_dracutmodules+=" {0} "\n'.format(
+                    ' '.join(config['omit_modules'])
+                )
+            )
+        if config.get('install_items'):
+            dracut_config.append(
+                'install_items+=" {0} "\n'.format(
+                    ' '.join(config['install_items'])
+                )
+            )
+        if dracut_config and config_file:
+            with open(config_file, 'w') as config_handle:
+                config_handle.writelines(dracut_config)
+
+    def prepare(self) -> None:
         """
         Prepare dracut caller environment
 
-        * Create kiwi .profile environment to be included in dracut initrd
         * Setup machine_id(s) to be generic and rebuild by dracut on boot
         """
-        profile = Profile(self.xml_state)
-        defaults = Defaults()
-        defaults.to_profile(profile)
         setup = SystemSetup(
             self.xml_state, self.boot_root_directory
         )
-        setup.import_shell_environment(profile)
         setup.setup_machine_id()
         self.dracut_options.append('--install')
         self.dracut_options.append('/.profile')
 
-    def create_initrd(self, mbrid=None, basename=None, install_initrd=False):
+    def create_initrd(
+        self, mbrid: Optional[SystemIdentifier] = None,
+        basename: Optional[str] = None, install_initrd: bool = False
+    ) -> None:
         """
+        Create kiwi .profile environment to be included in dracut initrd.
         Call dracut as chroot operation to create the initrd and move
         the result into the image build target directory
 
-        :param object mbrid: unused
-        :param string basename: base initrd file name
-        :param bool install_initrd: installation media initrd
+        :param SystemIdentifier mbrid: unused
+        :param str basename: base initrd file name
+        :param bool install_initrd: unused
         """
         if self.is_prepared():
             log.info('Creating generic dracut initrd archive')
+            self._create_profile_environment()
             kernel_info = Kernel(self.boot_root_directory)
             kernel_details = kernel_info.get_kernel(raise_on_not_found=True)
             if basename:
                 dracut_initrd_basename = basename
             else:
                 dracut_initrd_basename = self.initrd_base_name
-            if install_initrd:
-                included_files = self.included_files_install
-            else:
-                included_files = self.included_files
+            included_files = self.included_files
+            modules_args = [
+                '--modules', ' {0} '.format(' '.join(self.modules))
+            ] if self.modules else []
+            modules_args += [
+                '--add', ' {0} '.format(' '.join(self.add_modules))
+            ] if self.add_modules else []
+            modules_args += [
+                '--omit', ' {0} '.format(' '.join(self.omit_modules))
+            ] if self.omit_modules else []
             dracut_initrd_basename += '.xz'
-            dracut_call = Command.run(
-                [
-                    'chroot', self.boot_root_directory,
-                    'dracut', '--force',
-                    '--no-hostonly',
-                    '--no-hostonly-cmdline',
-                    '--xz'
-                ] + self.dracut_options + included_files + [
-                    dracut_initrd_basename,
-                    kernel_details.version
-                ],
-                stderr_to_stdout=True
-            )
+            options = self.dracut_options + modules_args + included_files
+            if kernel_details:
+                self.device_mount = MountManager(
+                    device='/dev',
+                    mountpoint=self.boot_root_directory + '/dev'
+                )
+                self.device_mount.bind_mount()
+                self.proc_mount = MountManager(
+                    device='/proc',
+                    mountpoint=self.boot_root_directory + '/proc'
+                )
+                self.proc_mount.bind_mount()
+                dracut_call = Command.run(
+                    [
+                        'chroot', self.boot_root_directory,
+                        'dracut', '--verbose',
+                        '--no-hostonly',
+                        '--no-hostonly-cmdline',
+                        '--xz'
+                    ] + options + [
+                        dracut_initrd_basename,
+                        kernel_details.version
+                    ],
+                    stderr_to_stdout=True
+                )
+                self.device_mount.umount()
+                self.proc_mount.umount()
             log.debug(dracut_call.output)
             Command.run(
                 [
@@ -125,67 +238,33 @@ class BootImageDracut(BootImageBase):
                 [self.target_dir, dracut_initrd_basename]
             )
 
-    def get_boot_names(self):
-        """
-        Provides kernel and initrd names for kiwi boot image
-
-        :return:
-            Contains boot_names_type tuple
-
-            .. code:: python
-
-                boot_names_type(
-                    kernel_name='INSTALLED_KERNEL',
-                    initrd_name='DRACUT_OUTPUT_NAME'
-                )
-
-        :rtype: tuple
-        """
-        boot_names_type = namedtuple(
-            'boot_names_type', ['kernel_name', 'initrd_name']
+    def _get_modules(self) -> List[str]:
+        cmd = Command.run(
+            [
+                'chroot', self.boot_root_directory,
+                'dracut', '--list-modules', '--no-kernel'
+            ]
         )
-        kernel = Kernel(
-            self.boot_root_directory
-        )
-        kernel_info = kernel.get_kernel()
-        if not kernel_info:
-            raise KiwiDiskBootImageError(
-                'No kernel in boot image tree %s found' %
-                self.boot_root_directory
-            )
-        dracut_output_format = self._get_dracut_output_file_format()
-        return boot_names_type(
-            kernel_name=kernel_info.name,
-            initrd_name=dracut_output_format.format(
-                kernel_version=kernel_info.version
-            )
+        return cmd.output.splitlines()
+
+    def _module_available(self, module: str) -> bool:
+        warn_msg = 'dracut module "{0}" not found in the root tree'
+        if module in self.available_modules:
+            return True
+        log.warning(warn_msg.format(module))
+        return False
+
+    def _create_profile_environment(self) -> None:
+        profile = Profile(self.xml_state)
+        defaults = Defaults()
+        defaults.to_profile(profile)
+        profile.create(
+            Defaults.get_profile_file(self.boot_root_directory)
         )
 
-    def _get_dracut_output_file_format(self):
-        """
-        Unfortunately the dracut initrd output file format varies between
-        the different Linux distributions. Tools like lsinitrd, and also
-        grub2 rely on the initrd output file to be in that format.
-        Thus when kiwi uses dracut the same file format should be used
-        all over the place in order to stay compatible with what the
-        distribution does
-        """
-        default_outfile_format = 'initramfs-{kernel_version}.img'
-        dracut_search_env = {
-            'PATH': os.sep.join([self.boot_root_directory, 'usr', 'bin'])
-        }
-        dracut_tool = Path.which(
-            'dracut', custom_env=dracut_search_env, access_mode=os.X_OK
-        )
-        if dracut_tool:
-            outfile_expression = r'outfile="/boot/(init.*\$kernel.*)"'
-            with open(dracut_tool) as dracut:
-                outfile = re.findall(outfile_expression, dracut.read())[0]
-                if outfile:
-                    return outfile.replace('$kernel', '{kernel_version}')
-
-        log.warning('Could not detect dracut output file format')
-        log.warning('Using default initrd file name format {0}'.format(
-            default_outfile_format
-        ))
-        return default_outfile_format
+    def __del__(self):
+        log.info('Cleaning up %s instance', type(self).__name__)
+        if self.device_mount:
+            self.device_mount.umount()
+        if self.proc_mount:
+            self.proc_mount.umount()

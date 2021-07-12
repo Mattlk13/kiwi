@@ -18,6 +18,7 @@
 import os
 from collections import namedtuple
 import hashlib
+import encodings.ascii as encoding
 
 # project
 from kiwi.command import Command
@@ -28,7 +29,7 @@ from kiwi.exceptions import (
 )
 
 
-class Checksum(object):
+class Checksum:
     """
     **Manage checksum creation for files**
 
@@ -42,6 +43,7 @@ class Checksum(object):
             )
         self.source_filename = source_filename
         self.checksum_filename = None
+        self.ascii = encoding.getregentry().name
 
     def matches(self, checksum, filename):
         """
@@ -58,7 +60,7 @@ class Checksum(object):
         """
         if not os.path.exists(filename):
             return False
-        with open(filename) as checksum_file:
+        with open(filename, encoding=self.ascii) as checksum_file:
             checksum_from_file = checksum_file.read()
             # checksum is expected to be stored in the first field
             # separated by space, other information might contain
@@ -126,7 +128,7 @@ class Checksum(object):
             blocks = self._block_list(
                 os.path.getsize(self.source_filename)
             )
-        with open(filename, 'w') as checksum_file:
+        with open(filename, encoding=self.ascii, mode='w') as checksum_file:
             if compressed_blocks:
                 checksum_file.write(
                     '%s %s %s %s %s\n' % (

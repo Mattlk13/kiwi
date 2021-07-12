@@ -16,19 +16,27 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 import copy
+from typing import (
+    Dict, List, Optional
+)
 
 # project
-from kiwi.logger import log
+from kiwi.defaults import Defaults
 from kiwi.utils.sync import DataSync
 from kiwi.mount_manager import MountManager
+from kiwi.command import Command
+from kiwi.storage.device_provider import DeviceProvider
 
 from kiwi.exceptions import (
     KiwiFileSystemSyncError
 )
 
+log = logging.getLogger('kiwi')
 
-class FileSystemBase(object):
+
+class FileSystemBase:
     """
     **Implements base class for filesystem interface**
 
@@ -39,12 +47,15 @@ class FileSystemBase(object):
     :param string root_dir: root directory path name
     :param dict custom_args: custom filesystem arguments
     """
-    def __init__(self, device_provider, root_dir=None, custom_args=None):
+    def __init__(
+        self, device_provider: DeviceProvider,
+        root_dir: str = None, custom_args: Dict = {}
+    ):
         # filesystems created with a block device stores the mountpoint
         # here. The file name of the file containing the filesystem is
         # stored in the device_provider if the filesystem is represented
         # as a file there
-        self.filesystem_mount = None
+        self.filesystem_mount: Optional[MountManager] = None
 
         # bind the block device providing class instance to this object.
         # This is done to guarantee the correct destructor order when
@@ -58,10 +69,10 @@ class FileSystemBase(object):
         # filesystem file name here
         self.filename = None
 
-        self.custom_args = {}
+        self.custom_args: Dict = {}
         self.post_init(custom_args)
 
-    def post_init(self, custom_args):
+    def post_init(self, custom_args: Dict):
         """
         Post initialization method
 
@@ -83,16 +94,19 @@ class FileSystemBase(object):
         if custom_args:
             self.custom_args = copy.deepcopy(custom_args)
 
-        if 'create_options' not in self.custom_args:
+        if not self.custom_args.get('create_options'):
             self.custom_args['create_options'] = []
 
-        if 'meta_data' not in self.custom_args:
+        if not self.custom_args.get('meta_data'):
             self.custom_args['meta_data'] = {}
 
-        if 'mount_options' not in self.custom_args:
+        if not self.custom_args.get('mount_options'):
             self.custom_args['mount_options'] = []
 
-    def create_on_device(self, label=None):
+        if not self.custom_args.get('fs_attributes'):
+            self.custom_args['fs_attributes'] = []
+
+    def create_on_device(self, label: str = None):
         """
         Create filesystem on block device
 
@@ -103,7 +117,9 @@ class FileSystemBase(object):
         """
         raise NotImplementedError
 
-    def create_on_file(self, filename, label=None, exclude=None):
+    def create_on_file(
+        self, filename: str, label: str = None, exclude: List[str] = None
+    ):
         """
         Create filesystem from root data tree
 
@@ -116,7 +132,21 @@ class FileSystemBase(object):
         """
         raise NotImplementedError
 
-    def sync_data(self, exclude=None):
+    def get_mountpoint(self) -> Optional[str]:
+        """
+        Provides mount point directory
+
+        Effective use of the directory is guaranteed only after sync_data
+
+        :return: directory path name
+
+        :rtype: string
+        """
+        if self.filesystem_mount:
+            return self.filesystem_mount.mountpoint
+        return None
+
+    def sync_data(self, exclude: List[str] = None):
         """
         Copy root data tree into filesystem
 
@@ -136,16 +166,45 @@ class FileSystemBase(object):
         self.filesystem_mount.mount(
             self.custom_args['mount_options']
         )
+        self._apply_attributes()
         data = DataSync(
             self.root_dir, self.filesystem_mount.mountpoint
         )
         data.sync_data(
-            options=['-a', '-H', '-X', '-A', '--one-file-system'],
-            exclude=exclude
+            exclude=exclude, options=Defaults.get_sync_options()
         )
-        self.filesystem_mount.umount()
+
+    def umount(self):
+        """
+        Umounts the filesystem in case it is mounted, does nothing otherwise
+        """
+        if self.filesystem_mount:
+            log.info('umount %s instance', type(self).__name__)
+            self.filesystem_mount.umount()
+            self.filesystem_mount = None
+
+    def _apply_attributes(self):
+        """
+        Apply filesystem attributes
+        """
+        attribute_map = {
+            'synchronous-updates': '+S',
+            'no-copy-on-write': '+C'
+        }
+        for attribute in self.custom_args['fs_attributes']:
+            if attribute_map.get(attribute):
+                log.info(
+                    '--> setting {0} for {1}'.format(
+                        attribute, self.filesystem_mount.mountpoint
+                    )
+                )
+                Command.run(
+                    [
+                        'chattr', attribute_map.get(attribute),
+                        self.filesystem_mount.mountpoint
+                    ]
+                )
 
     def __del__(self):
-        if self.filesystem_mount:
-            log.info('Cleaning up %s instance', type(self).__name__)
-            self.filesystem_mount.umount()
+        log.info('Cleaning up %s instance', type(self).__name__)
+        self.umount()

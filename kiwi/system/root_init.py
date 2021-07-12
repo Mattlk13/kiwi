@@ -23,7 +23,6 @@ import os
 
 # project
 from kiwi.utils.sync import DataSync
-from kiwi.command import Command
 from kiwi.path import Path
 from kiwi.defaults import Defaults
 
@@ -33,7 +32,7 @@ from kiwi.exceptions import (
 )
 
 
-class RootInit(object):
+class RootInit:
     """
     **Implements creation of new root directory for a linux system**
 
@@ -42,20 +41,20 @@ class RootInit(object):
 
     :param str root_dir: root directory path name
     """
-    def __init__(self, root_dir, allow_existing=False):
+    def __init__(self, root_dir: str, allow_existing: bool = False):
         if not allow_existing and os.path.exists(root_dir):
             raise KiwiRootDirExists(
                 'Root directory %s already exists' % root_dir
             )
         self.root_dir = root_dir
 
-    def delete(self):
+    def delete(self) -> None:
         """
         Force delete root directory and its contents
         """
         Path.wipe(self.root_dir)
 
-    def create(self):
+    def create(self) -> None:
         """
         Create new system root directory
 
@@ -63,8 +62,8 @@ class RootInit(object):
         for the purpose of building a system image from it. This
         includes the following setup:
 
-        * create static core device nodes
         * create core system paths
+        * create static core device nodes
 
         On success the contents of the temporary location are
         synced to the specified root_dir and the temporary location
@@ -79,7 +78,6 @@ class RootInit(object):
         try:
             self._create_base_directories(root)
             self._create_base_links(root)
-            self._setup_config_templates(root)
             data = DataSync(root + '/', self.root_dir)
             data.sync_data(
                 options=['-a', '--ignore-existing']
@@ -95,17 +93,6 @@ class RootInit(object):
             )
         finally:
             rmtree(root, ignore_errors=True)
-
-    def _setup_config_templates(self, root):
-        group_template = '/var/adm/fillup-templates/group.aaa_base'
-        passwd_template = '/var/adm/fillup-templates/passwd.aaa_base'
-        proxy_template = '/var/adm/fillup-templates/sysconfig.proxy'
-        if os.path.exists(group_template):
-            Command.run(['cp', group_template, root + '/etc/group'])
-        if os.path.exists(passwd_template):
-            Command.run(['cp', passwd_template, root + '/etc/passwd'])
-        if os.path.exists(proxy_template):
-            Command.run(['cp', proxy_template, root + '/etc/sysconfig/proxy'])
 
     def _create_base_directories(self, root):
         """
@@ -143,8 +130,7 @@ class RootInit(object):
             ('/proc/self/fd', '%s/dev/fd'),
             ('fd/2', '%s/dev/stderr'),
             ('fd/0', '%s/dev/stdin'),
-            ('fd/1', '%s/dev/stdout'),
-            ('/run', '%s/var/run')
+            ('fd/1', '%s/dev/stdout')
         )
         for src, target in base_system_links:
             os.symlink(src, target % root, )

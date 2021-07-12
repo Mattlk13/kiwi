@@ -16,16 +16,18 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 
 # project
 from kiwi.command import Command
 from kiwi.storage.device_provider import DeviceProvider
 from kiwi.utils.command_capabilities import CommandCapabilities
-from kiwi.logger import log
 
 from kiwi.exceptions import (
     KiwiLoopSetupError
 )
+
+log = logging.getLogger('kiwi')
 
 
 class LoopDevice(DeviceProvider):
@@ -36,8 +38,11 @@ class LoopDevice(DeviceProvider):
     :param int filesize_mbytes: size of the loop file
     :param int blocksize_bytes: blocksize used in loop driver
     """
-    def __init__(self, filename, filesize_mbytes=None, blocksize_bytes=None):
-        self.node_name = None
+    def __init__(
+        self, filename: str, filesize_mbytes: int = None,
+        blocksize_bytes: int = None
+    ):
+        self.node_name = ''
         if not os.path.exists(filename) and not filesize_mbytes:
             raise KiwiLoopSetupError(
                 'Can not create loop file without a size'
@@ -46,7 +51,7 @@ class LoopDevice(DeviceProvider):
         self.filesize_mbytes = filesize_mbytes
         self.blocksize_bytes = blocksize_bytes
 
-    def get_device(self):
+    def get_device(self) -> str:
         """
         Device node name
 
@@ -56,7 +61,7 @@ class LoopDevice(DeviceProvider):
         """
         return self.node_name
 
-    def is_loop(self):
+    def is_loop(self) -> bool:
         """
         Always True
 
@@ -66,7 +71,7 @@ class LoopDevice(DeviceProvider):
         """
         return True
 
-    def create(self, overwrite=True):
+    def create(self, overwrite: bool = True):
         """
         Setup a loop device of the blocksize given in the constructor
         The file to loop is created with the size specified in the
@@ -91,7 +96,7 @@ class LoopDevice(DeviceProvider):
         loop_call = Command.run(
             ['losetup'] + loop_options + ['-f', '--show', self.filename]
         )
-        self.node_name = loop_call.output.rstrip('\n')
+        self.node_name = loop_call.output.rstrip(os.linesep)
 
     def __del__(self):
         if self.node_name:

@@ -16,16 +16,19 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
+from typing import Optional
 
 # project
 from kiwi.command import Command
 from kiwi.storage.device_provider import DeviceProvider
 from kiwi.storage.mapped_device import MappedDevice
-from kiwi.logger import log
 
 from kiwi.exceptions import (
     KiwiRaidSetupError
 )
+
+log = logging.getLogger('kiwi')
 
 
 class RaidDevice(DeviceProvider):
@@ -34,7 +37,7 @@ class RaidDevice(DeviceProvider):
 
     :param object storage_provider: Instance of class based on DeviceProvider
     """
-    def __init__(self, storage_provider):
+    def __init__(self, storage_provider: DeviceProvider):
         # bind the underlaying block device providing class instance
         # to this object (e.g loop) if present. This is done to guarantee
         # the correct destructor order when the device should be released.
@@ -46,7 +49,7 @@ class RaidDevice(DeviceProvider):
         }
         self.raid_device = None
 
-    def get_device(self):
+    def get_device(self) -> Optional[MappedDevice]:
         """
         Instance of MappedDevice providing the raid device
 
@@ -58,6 +61,7 @@ class RaidDevice(DeviceProvider):
             return MappedDevice(
                 device=self.raid_device, device_provider=self
             )
+        return None
 
     def create_degraded_raid(self, raid_level):
         """
@@ -95,7 +99,7 @@ class RaidDevice(DeviceProvider):
         )
         self.raid_device = raid_device
 
-    def create_raid_config(self, filename):
+    def create_raid_config(self, filename: str) -> None:
         """
         Create mdadm config file from mdadm request
 
@@ -107,7 +111,7 @@ class RaidDevice(DeviceProvider):
         with open(filename, 'w') as mdadmconf:
             mdadmconf.write(mdadm_call.output)
 
-    def is_loop(self):
+    def is_loop(self) -> bool:
         """
         Check if storage provider is loop based
 

@@ -16,12 +16,13 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import importlib
+import logging
 from collections import namedtuple
 from xml.etree import ElementTree
 from xml.dom import minidom
 
 # project
-from kiwi.logger import log
+import kiwi.defaults as defaults
 
 from kiwi.exceptions import (
     KiwiSatSolverPluginError,
@@ -29,8 +30,10 @@ from kiwi.exceptions import (
     KiwiSatSolverJobProblems
 )
 
+log = logging.getLogger('kiwi')
 
-class Sat(object):
+
+class Sat:
     """
     **Sat Solver class to run package solver operations**
 
@@ -54,6 +57,26 @@ class Sat(object):
 
         self.pool = self.solv.Pool()
         self.pool.setarch()
+
+    def set_dist_type(self, dist, arch=None):
+        if not arch:
+            arch = defaults.PLATFORM_MACHINE
+        dist_types = {
+            'deb-x86_64': {
+                'pool_dist': self.solv.Pool.DISTTYPE_DEB,
+                'arch': 'amd64'
+            }
+        }
+        dist_type = dist_types.get(f'{dist}-{arch}')
+        if dist_type:
+            if self.pool.setdisttype(dist_type['pool_dist']) < 0:
+                raise KiwiSatSolverPluginError(
+                    f'Failed to set dist type for distribution: {dist!r}'
+                )
+        self.pool.setarch(
+            dist_type['arch'] if dist_type else arch
+        )
+        return dist_type
 
     def add_repository(self, solver_repository):
         """
@@ -154,7 +177,8 @@ class Sat(object):
         """
         Iterate over solver result and return a data dictionary
 
-        :param object solver_transaction: result of :class:`Pool::Solver::transaction()`
+        :param object solver_transaction:
+            result of :class:`Pool::Solver::transaction()`
 
         :return: dict of packages and their details
 
@@ -203,7 +227,7 @@ class Sat(object):
             selection = self.pool.select(
                 job_name, selection_name | selection_provides
             )
-            if selection.flags() & self.solv.Selection.SELECTION_PROVIDES:
+            if selection.flags & self.solv.Selection.SELECTION_PROVIDES:
                 log.info('--> Using capability match for {0}'.format(job_name))
             if selection.isempty():
                 if skip_missing:

@@ -17,17 +17,18 @@
 #
 import os
 import shutil
-import platform
+import logging
 
 # project
 from kiwi.defaults import Defaults
 from kiwi.command import Command
 from kiwi.utils.sync import DataSync
 from kiwi.path import Path
-from kiwi.logger import log
+
+log = logging.getLogger('kiwi')
 
 
-class IsoToolsBase(object):
+class IsoToolsBase:
     """
     **Base Class for Parameter API for iso creation tools**
 
@@ -37,7 +38,7 @@ class IsoToolsBase(object):
     :param str iso_loaders: list of ISO loaders to embed
     """
     def __init__(self, source_dir):
-        self.arch = platform.machine()
+        self.arch = Defaults.get_platform_name()
         self.source_dir = source_dir
 
         self.boot_path = Defaults.get_iso_boot_path()

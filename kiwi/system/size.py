@@ -15,21 +15,24 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import os
+from typing import List
+
 # project
 from kiwi.command import Command
 from kiwi.defaults import Defaults
 
 
-class SystemSize(object):
+class SystemSize:
     """
     **Provide source tree size information**
 
     :param str source_dir: source directory path name
     """
-    def __init__(self, source_dir):
+    def __init__(self, source_dir: str):
         self.source_dir = source_dir
 
-    def customize(self, size, requested_filesystem):
+    def customize(self, size: float, requested_filesystem: str) -> int:
         """
         Increase the sum of all file sizes by an empiric factor
 
@@ -40,7 +43,7 @@ class SystemSize(object):
         ensure the given data size can be stored in a filesystem
         of the customized size
 
-        :param int size: mbsize to update
+        :param float size: mbsize to update
         :param str requested_filesystem: filesystem name
 
         :return: mbytes
@@ -61,7 +64,7 @@ class SystemSize(object):
 
         return int(size)
 
-    def accumulate_mbyte_file_sizes(self, exclude=None):
+    def accumulate_mbyte_file_sizes(self, exclude: List[str] = None) -> int:
         """
         Calculate data size of all data in the source tree
 
@@ -71,7 +74,12 @@ class SystemSize(object):
 
         :rtype: int
         """
-        exclude_options = []
+        exclude_options: List[str] = []
+        for nodev in Defaults.get_exclude_list_for_non_physical_devices():
+            exclude_options.append('--exclude')
+            exclude_options.append(
+                os.sep.join([self.source_dir, nodev])
+            )
         if exclude:
             for item in exclude:
                 exclude_options.append('--exclude')
@@ -83,9 +91,9 @@ class SystemSize(object):
                 self.source_dir
             ]
         )
-        return int(du_call.output.split('\t')[0]) / 1048576
+        return int(int(du_call.output.split('\t')[0]) / 1048576)
 
-    def accumulate_files(self):
+    def accumulate_files(self) -> int:
         """
         Calculate sum of all files in the source tree
 

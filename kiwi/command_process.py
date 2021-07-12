@@ -15,18 +15,19 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import logging
 from collections import namedtuple
 
 # project
-from .logger import log
-from .utils.codec import Codec
+from kiwi.utils.codec import Codec
+from kiwi.logger import Logger
 
-from .exceptions import (
-    KiwiCommandError
-)
+from kiwi.exceptions import KiwiCommandError
+
+log = logging.getLogger('kiwi')
 
 
-class CommandProcess(object):
+class CommandProcess:
     """
     **Implements processing of non blocking Command calls**
 
@@ -117,12 +118,12 @@ class CommandProcess(object):
         return self.command.get_error_code()
 
     def _init_progress(self):
-        log.progress(
+        Logger.progress(
             0, 100, '[ INFO    ]: Processing'
         )
 
     def _stop_progress(self):
-        log.progress(
+        Logger.progress(
             100, 100, '[ INFO    ]: Processing'
         )
 
@@ -134,7 +135,7 @@ class CommandProcess(object):
             if match_method(item, command_output):
                 self.items_processed += 1
                 if self.items_processed <= items_count:
-                    log.progress(
+                    Logger.progress(
                         self.items_processed, items_count,
                         '[ INFO    ]: Processing'
                     )
@@ -147,7 +148,7 @@ class CommandProcess(object):
             self.command.kill()
 
 
-class CommandIterator(object):
+class CommandIterator:
     """
     **Implements an Iterator for Instances of Command**
 

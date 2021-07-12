@@ -16,8 +16,8 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 """
-usage: kiwi system prepare -h | --help
-       kiwi system prepare --description=<directory> --root=<directory>
+usage: kiwi-ng system prepare -h | --help
+       kiwi-ng system prepare --description=<directory> --root=<directory>
            [--allow-existing-root]
            [--clear-cache]
            [--ignore-repos]
@@ -25,12 +25,13 @@ usage: kiwi system prepare -h | --help
            [--set-repo=<source,type,alias,priority,imageinclude,package_gpgcheck>]
            [--add-repo=<source,type,alias,priority,imageinclude,package_gpgcheck>...]
            [--add-package=<name>...]
+           [--add-bootstrap-package=<name>...]
            [--delete-package=<name>...]
            [--set-container-derived-from=<uri>]
            [--set-container-tag=<name>]
            [--add-container-label=<label>...]
            [--signing-key=<key-file>...]
-       kiwi system prepare help
+       kiwi-ng system prepare help
 
 commands:
     prepare
@@ -39,6 +40,8 @@ commands:
         show manual page for prepare command
 
 options:
+    --add-bootstrap-package=<name>
+        install the given package name as part of the early bootstrap process
     --add-package=<name>
         install the given package name
     --add-repo=<source,type,alias,priority,imageinclude,package_gpgcheck>
@@ -83,6 +86,7 @@ options:
         includes the key-file as a trusted key for package manager validations
 """
 import os
+import logging
 
 # project
 from kiwi.tasks.base import CliTask
@@ -92,8 +96,8 @@ from kiwi.system.prepare import SystemPrepare
 from kiwi.system.setup import SystemSetup
 from kiwi.defaults import Defaults
 from kiwi.system.profile import Profile
-from kiwi.logger import log
-from kiwi.utils.rpm import Rpm
+
+log = logging.getLogger('kiwi')
 
 
 class SystemPrepareTask(CliTask):
@@ -105,7 +109,7 @@ class SystemPrepareTask(CliTask):
     * :attr:`manual`
         Instance of Help
     """
-    def process(self):                                      # noqa: C901
+    def process(self):
         """
         Prepare and install a new system for chroot access
         """
@@ -176,9 +180,21 @@ class SystemPrepareTask(CliTask):
         )
         manager = system.setup_repositories(
             self.command_args['--clear-cache'],
-            self.command_args['--signing-key']
+            self.command_args['--signing-key'],
+            self.global_args['--target-arch']
         )
-        system.install_bootstrap(manager)
+        system.install_bootstrap(
+            manager, self.command_args['--add-bootstrap-package']
+        )
+
+        setup = SystemSetup(
+            self.xml_state, abs_root_path
+        )
+        setup.import_description()
+
+        # call post_bootstrap.sh script if present
+        setup.call_post_bootstrap_script()
+
         system.install_system(
             manager
         )
@@ -197,12 +213,10 @@ class SystemPrepareTask(CliTask):
         defaults = Defaults()
         defaults.to_profile(profile)
 
-        setup = SystemSetup(
-            self.xml_state, abs_root_path
+        profile.create(
+            Defaults.get_profile_file(abs_root_path)
         )
-        setup.import_shell_environment(profile)
 
-        setup.import_description()
         setup.import_overlay_files()
         setup.import_image_identifier()
         setup.setup_groups()
@@ -218,6 +232,8 @@ class SystemPrepareTask(CliTask):
 
         # setup permanent image repositories after cleanup
         setup.import_repositories_marked_as_imageinclude()
+
+        # call config.sh script if present
         setup.call_config_script()
 
         # handle uninstall package requests, gracefully uninstall
@@ -229,9 +245,7 @@ class SystemPrepareTask(CliTask):
         system.pinch_system(force=True)
 
         # delete any custom rpm macros created
-        Rpm(
-            abs_root_path, Defaults.get_custom_rpm_image_macro_name()
-        ).wipe_config()
+        system.clean_package_manager_leftovers()
 
         # make sure system instance is cleaned up now
         del system

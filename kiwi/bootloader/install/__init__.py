@@ -15,16 +15,19 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
-# project
-from .grub2 import BootLoaderInstallGrub2
-from .zipl import BootLoaderInstallZipl
+import importlib
+from typing import Dict
+from abc import (
+    ABCMeta,
+    abstractmethod
+)
 
 from ...exceptions import (
     KiwiBootLoaderInstallSetupError
 )
 
 
-class BootLoaderInstall(object):
+class BootLoaderInstall(metaclass=ABCMeta):
     """
     **BootLoaderInstall Factory**
 
@@ -33,16 +36,29 @@ class BootLoaderInstall(object):
     :param object device_provider: instance of :class:`DeviceProvider`
     :param dict custom_args: custom arguments dictionary
     """
-    def __new__(self, name, root_dir, device_provider, custom_args=None):
-        if name == 'grub2':
-            return BootLoaderInstallGrub2(
+    @abstractmethod
+    def __init__(self) -> None:
+        return None  # pragma: no cover
+
+    @staticmethod
+    def new(
+        name: str, root_dir: str, device_provider: object,
+        custom_args: Dict = None
+    ):
+        name_map = {
+            'grub2': {'grub2': 'BootLoaderInstallGrub2'},
+            'grub2_s390x_emu': {'grub2': 'BootLoaderInstallGrub2'}
+        }
+        try:
+            (bootloader_namespace, bootloader_name) = \
+                list(name_map[name].items())[0]
+            bootloader_install = importlib.import_module(
+                'kiwi.bootloader.install.{}'.format(bootloader_namespace)
+            )
+            return bootloader_install.__dict__[bootloader_name](
                 root_dir, device_provider, custom_args
             )
-        elif name == 'grub2_s390x_emu':
-            return BootLoaderInstallZipl(
-                root_dir, device_provider, custom_args
-            )
-        else:
+        except Exception:
             raise KiwiBootLoaderInstallSetupError(
-                'Support for %s bootloader installation not implemented' % name
+                f'Support for {name} bootloader installation not implemented'
             )

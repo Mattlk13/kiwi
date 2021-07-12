@@ -15,16 +15,33 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import re
 import os
-from collections import namedtuple
+from typing import (
+    NamedTuple, Optional
+)
 
 # project
 from kiwi.command import Command
 
 from kiwi.exceptions import KiwiKernelLookupError
 
+kernel_type = NamedTuple(
+    'kernel_type', [
+        ('name', str),
+        ('filename', str),
+        ('version', str)
+    ]
+)
+xen_hypervisor_type = NamedTuple(
+    'xen_hypervisor_type', [
+        ('filename', str),
+        ('name', str)
+    ]
+)
 
-class Kernel(object):
+
+class Kernel:
     """
     **Implementes kernel lookup and extraction from given root tree**
 
@@ -34,11 +51,13 @@ class Kernel(object):
         file so that we do not have to search for many different
         names in this code
     """
-    def __init__(self, root_dir):
+    def __init__(self, root_dir: str):
         self.root_dir = root_dir
         self.kernel_names = self._setup_kernel_names_for_lookup()
 
-    def get_kernel(self, raise_on_not_found=False):
+    def get_kernel(
+        self, raise_on_not_found: bool = False
+    ) -> Optional[kernel_type]:
         """
         Lookup kernel files and provide filename and version
 
@@ -49,42 +68,23 @@ class Kernel(object):
             and kernel is not found
         :return: tuple with filename, kernelname and version
 
-        :rtype: namedtuple
+        :rtype: tuple|None
         """
         for kernel_name in self.kernel_names:
             kernel_file = os.sep.join(
                 [self.root_dir, 'boot', kernel_name]
             )
             if os.path.exists(kernel_file):
-                kernel_file_for_version_check = \
-                    self._get_kernel_name_for_version_lookup()
-                if not kernel_file_for_version_check:
-                    # The system does not provide a gzip compressed binary
-                    # of the kernel. Thus we try to fetch the version from
-                    # the arbitrary kernel image format. Please Note:
-                    # kernel images that contains the decompressor code
-                    # as part of the kernel could have been compressed by
-                    # any possible compression algorithm. For such kernels
-                    # the simple kversion utility will not be able to read
-                    # kernel version
-                    kernel_file_for_version_check = kernel_file
-
-                version = Command.run(
-                    command=['kversion', kernel_file_for_version_check],
-                    raise_on_error=False
-                ).output
-                if not version:
-                    version = 'no-version-found'
-                version = version.rstrip('\n')
-                kernel = namedtuple(
-                    'kernel', ['name', 'filename', 'version']
+                version_match = re.match(
+                    '.*?-(.*)', os.path.basename(kernel_file)
                 )
-                return kernel(
-                    name=os.path.basename(os.path.realpath(kernel_file)),
-                    filename=kernel_file,
-                    version=version
-                )
-
+                if version_match:
+                    version = version_match.group(1)
+                    return kernel_type(
+                        name=os.path.basename(os.path.realpath(kernel_file)),
+                        filename=kernel_file,
+                        version=version
+                    )
         if raise_on_not_found:
             raise KiwiKernelLookupError(
                 'No kernel found in {0}, searched for {1}'.format(
@@ -92,26 +92,25 @@ class Kernel(object):
                     ','.join(self.kernel_names)
                 )
             )
+        return None
 
-    def get_xen_hypervisor(self):
+    def get_xen_hypervisor(self) -> Optional[xen_hypervisor_type]:
         """
         Lookup xen hypervisor and provide filename and hypervisor name
 
         :return: tuple with filename and hypervisor name
 
-        :rtype: namedtuple
+        :rtype: tuple|None
         """
         xen_hypervisor = self.root_dir + '/boot/xen.gz'
         if os.path.exists(xen_hypervisor):
-            xen = namedtuple(
-                'xen', ['filename', 'name']
-            )
-            return xen(
+            return xen_hypervisor_type(
                 filename=xen_hypervisor,
                 name='xen.gz'
             )
+        return None
 
-    def copy_kernel(self, target_dir, file_name=None):
+    def copy_kernel(self, target_dir: str, file_name: str = None) -> None:
         """
         Copy kernel to specified target
 
@@ -130,7 +129,9 @@ class Kernel(object):
             )
             Command.run(['cp', kernel.filename, target_file])
 
-    def copy_xen_hypervisor(self, target_dir, file_name=None):
+    def copy_xen_hypervisor(
+        self, target_dir: str, file_name: str = None
+    ) -> None:
         """
         Copy xen hypervisor to specified target
 
@@ -159,17 +160,16 @@ class Kernel(object):
 
         :rtype: list
         """
-        kernel_names = [
-            # lookup for the symlink first
-            'vmlinux', 'vmlinuz'
-        ]
-        kernel_dirs = sorted(os.listdir(''.join([self.root_dir, '/lib/modules'])))
+        kernel_names = []
+        kernel_dirs = sorted(
+            os.listdir(''.join([self.root_dir, '/lib/modules']))
+        )
         if kernel_dirs:
             # append lookup for the real kernel image names
             # depending on the arch and os they are different
             # in their prefix
             kernel_prefixes = [
-                'uImage', 'Image', 'zImage', 'vmlinuz', 'vmlinux', 'image'
+                'uImage', 'Image', 'zImage', 'vmlinuz', 'image', 'vmlinux'
             ]
             kernel_name_pattern = '{prefix}-{name}'
             for kernel_prefix in kernel_prefixes:
@@ -180,14 +180,3 @@ class Kernel(object):
                         )
                     )
         return kernel_names
-
-    def _get_kernel_name_for_version_lookup(self):
-        vmlinux_kernel_files = list(
-            filter(lambda kernel: 'vmlinux-' in kernel, self.kernel_names)
-        )
-        if vmlinux_kernel_files:
-            kernel_file_for_version_check = os.sep.join(
-                [self.root_dir, 'boot', vmlinux_kernel_files[0] + '.gz']
-            )
-            if os.path.exists(kernel_file_for_version_check):
-                return kernel_file_for_version_check

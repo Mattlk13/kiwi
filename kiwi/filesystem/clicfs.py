@@ -15,8 +15,11 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
-
 from tempfile import mkdtemp
+from typing import (
+    Dict, List, Optional
+)
+import logging
 
 # project
 from kiwi.filesystem.base import FileSystemBase
@@ -25,14 +28,15 @@ from kiwi.command import Command
 from kiwi.system.size import SystemSize
 from kiwi.path import Path
 from kiwi.storage.loop_device import LoopDevice
-from kiwi.logger import log
+
+log = logging.getLogger('kiwi')
 
 
 class FileSystemClicFs(FileSystemBase):
     """
     **Implements creation of clicfs filesystem**
     """
-    def post_init(self, custom_args=None):
+    def post_init(self, custom_args: Dict = None):
         """
         Post initialization method
 
@@ -41,9 +45,11 @@ class FileSystemClicFs(FileSystemBase):
 
         :param dict custom_args: unused
         """
-        self.container_dir = None
+        self.container_dir: Optional[str] = None
 
-    def create_on_file(self, filename, label=None, exclude=None):
+    def create_on_file(
+        self, filename: str, label: str = None, exclude: List[str] = None
+    ):
         """
         Create clicfs filesystem from data tree
 

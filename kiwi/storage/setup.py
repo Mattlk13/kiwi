@@ -16,16 +16,19 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 from collections import namedtuple
 
 # project
 from kiwi.firmware import FirmWare
 from kiwi.system.size import SystemSize
 from kiwi.defaults import Defaults
-from kiwi.logger import log
+from kiwi.xml_state import XMLState
+
+log = logging.getLogger('kiwi')
 
 
-class DiskSetup(object):
+class DiskSetup:
     """
     **Implements disk setup methods**
 
@@ -35,10 +38,11 @@ class DiskSetup(object):
     :param object xml_state: Instance of XMLState
     :param string root_dir: root directory path name
     """
-    def __init__(self, xml_state, root_dir):
+    def __init__(self, xml_state: XMLState, root_dir: str):
         self.root_filesystem_is_overlay = xml_state.build_type.get_overlayroot()
+        self.swap_mbytes = xml_state.get_oemconfig_swap_mbytes()
         self.configured_size = xml_state.get_build_type_size()
-        self.build_type_name = xml_state.get_build_type_name()
+        self.disk_resize_requested = xml_state.get_oemconfig_oem_resize()
         self.filesystem = xml_state.build_type.get_filesystem()
         self.bootpart_requested = xml_state.build_type.get_bootpartition()
         self.bootpart_mbytes = xml_state.build_type.get_bootpartsize()
@@ -46,7 +50,7 @@ class DiskSetup(object):
         self.mdraid = xml_state.build_type.get_mdraid()
         self.luks = xml_state.build_type.get_luks()
         self.volume_manager = xml_state.get_volume_management()
-        self.bootloader = xml_state.build_type.get_bootloader()
+        self.bootloader = xml_state.get_build_type_bootloader_name()
         self.oemconfig = xml_state.get_build_type_oemconfig_section()
         self.volumes = xml_state.get_volumes()
 
@@ -60,7 +64,7 @@ class DiskSetup(object):
         self.root_dir = root_dir
         self.xml_state = xml_state
 
-    def get_disksize_mbytes(self):
+    def get_disksize_mbytes(self) -> int:
         """
         Precalculate disk size requirements in mbytes
 
@@ -92,6 +96,11 @@ class DiskSetup(object):
                 log.info(
                     '--> volume(s) size setup adding %s MB', volume_mbytes
                 )
+        elif self.swap_mbytes:
+            calculated_disk_mbytes += self.swap_mbytes
+            log.info(
+                '--> swap partition adding %s MB', self.swap_mbytes
+            )
 
         legacy_bios_mbytes = self.firmware.get_legacy_bios_partition_size()
         if legacy_bios_mbytes:
@@ -181,18 +190,16 @@ class DiskSetup(object):
             return False
         if self.mdraid:
             return True
-        if self.volume_manager:
+        if self.volume_manager == 'lvm':
             return True
-        if self.filesystem == 'btrfs':
-            return True
-        if self.filesystem == 'xfs':
-            return True
+        if self.volume_manager == 'btrfs':
+            return False
         if self.root_filesystem_is_overlay:
             return True
-        if self.bootloader == 'grub2_s390x_emu':
-            return True
+        return False
 
-    def get_boot_label(self):
+    @staticmethod
+    def get_boot_label() -> str:
         """
         Filesystem Label to use for the boot partition
 
@@ -200,12 +207,9 @@ class DiskSetup(object):
 
         :rtype: str
         """
-        label = 'BOOT'
-        if self.bootloader == 'grub2_s390x_emu':
-            label = 'ZIPL'
-        return label
+        return 'BOOT'
 
-    def get_root_label(self):
+    def get_root_label(self) -> str:
         """
         Filesystem Label to use for the root partition
 
@@ -221,7 +225,8 @@ class DiskSetup(object):
             root_label = 'ROOT'
         return root_label
 
-    def get_efi_label(self):
+    @staticmethod
+    def get_efi_label() -> str:
         """
         Filesystem Label to use for the EFI partition
 
@@ -231,7 +236,7 @@ class DiskSetup(object):
         """
         return 'EFI'
 
-    def boot_partition_size(self):
+    def boot_partition_size(self) -> int:
         """
         Size of the boot partition in mbytes
 
@@ -242,8 +247,8 @@ class DiskSetup(object):
         if self.need_boot_partition():
             if self.bootpart_mbytes:
                 return self.bootpart_mbytes
-            else:
-                return Defaults.get_default_boot_mbytes()
+            return Defaults.get_default_boot_mbytes()
+        return 0
 
     def _inplace_recovery_partition_size(self):
         """
@@ -270,10 +275,10 @@ class DiskSetup(object):
         data_volume_mbytes = self._calculate_volume_mbytes()
         root_volume = self._get_root_volume_configuration()
 
-        # For oem types we only add the default min volume size
-        # because their target size request is handled on first boot
-        # of the disk image in oemboot/repart
-        if self.build_type_name == 'oem':
+        # If disk resize is requested we only add the default min
+        # volume size because their target size request is handled
+        # on first boot of the disk image in oemboot/repart
+        if self.disk_resize_requested:
             for volume in self.volumes:
                 disk_volume_mbytes += Defaults.get_min_volume_mbytes()
             return disk_volume_mbytes
@@ -319,7 +324,7 @@ class DiskSetup(object):
 
     def _get_root_volume_configuration(self):
         """
-        Provide LVRoot volume configuration if present and in
+        Provide root volume configuration if present and in
         use according to the selected volume management. So far
         this only affects the LVM volume manager
         """
@@ -327,7 +332,7 @@ class DiskSetup(object):
             'root_volume_type', ['size_type', 'req_size']
         )
         for volume in self.volumes:
-            if volume.name == 'LVRoot':
+            if volume.is_root_volume:
                 if volume.size:
                     [size_type, req_size] = volume.size.split(':')
                     return root_volume_type(

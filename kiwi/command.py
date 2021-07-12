@@ -15,25 +15,42 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+from typing import NamedTuple
 import select
 import os
+import logging
 import subprocess
-from collections import namedtuple
 
 # project
-from .utils.codec import Codec
+from kiwi.utils.codec import Codec
 
-from .exceptions import (
+from kiwi.exceptions import (
     KiwiCommandError,
     KiwiCommandNotFound
 )
 
-command_type = namedtuple(
-    'command', ['output', 'error', 'returncode']
+log = logging.getLogger('kiwi')
+
+command_type = NamedTuple(
+    'command_type', [
+        ('output', str),
+        ('error', str),
+        ('returncode', int)
+    ]
+)
+
+command_call_type = NamedTuple(
+    'command_call_type', [
+        ('output', str),
+        ('output_available', bool),
+        ('error', str),
+        ('error_available', bool),
+        ('process', subprocess.Popen)
+    ]
 )
 
 
-class Command(object):
+class Command:
     """
     **Implements command invocation**
 
@@ -72,7 +89,6 @@ class Command(object):
 
         :rtype: namedtuple
         """
-        from .logger import log
         from .path import Path
         log.debug('EXEC: [%s]', ' '.join(command))
         environment = os.environ
@@ -104,11 +120,11 @@ class Command(object):
                 '%s: %s: %s' % (command[0], type(e).__name__, format(e))
             )
         output, error = process.communicate()
-        if process.returncode != 0 and not error:
-            error = bytes(b'(no output on stderr)')
-        if process.returncode != 0 and not output:
-            output = bytes(b'(no output on stdout)')
         if process.returncode != 0 and raise_on_error:
+            if not error:
+                error = bytes(b'(no output on stderr)')
+            if not output:
+                output = bytes(b'(no output on stdout)')
             log.debug(
                 'EXEC: Failed with stderr: {0}, stdout: {1}'.format(
                     Codec.decode(error), Codec.decode(output)
@@ -156,7 +172,6 @@ class Command(object):
 
         :rtype: namedtuple
         """
-        from .logger import log
         from .path import Path
         log.debug('EXEC: [%s]', ' '.join(command))
         environment = os.environ
@@ -202,14 +217,7 @@ class Command(object):
                     return True
             return _select
 
-        command = namedtuple(
-            'command', [
-                'output', 'output_available',
-                'error', 'error_available',
-                'process'
-            ]
-        )
-        return command(
+        return command_call_type(
             output=process.stdout,
             output_available=output_available(),
             error=process.stderr,

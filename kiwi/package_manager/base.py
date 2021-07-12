@@ -15,32 +15,37 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+from typing import List
+
+from kiwi.api_helper import decommissioned
+from kiwi.command import command_call_type
+from kiwi.system.root_bind import RootBind
+from kiwi.repository.base import RepositoryBase
 
 
-class PackageManagerBase(object):
+class PackageManagerBase:
     """
-    **Implements base class for installation/deletion of
-    packages and collections using a package manager**
+    **Implements base class for Package Management**
 
     :param object repository: instance of :class:`Repository`
     :param str root_dir: root directory path name
-    :param object root_bind: instance of :class:`RootBind`
     :param list package_requests: list of packages to install or delete
     :param list collection_requests: list of collections to install
     :param list product_requests: list of products to install
     """
-    def __init__(self, repository, custom_args=None):
+    def __init__(
+        self, repository: RepositoryBase, custom_args: List = []
+    ) -> None:
         self.repository = repository
         self.root_dir = repository.root_dir
-        self.root_bind = repository.root_bind
-        self.package_requests = []
-        self.collection_requests = []
-        self.product_requests = []
-        self.exclude_requests = []
+        self.package_requests: List[str] = []
+        self.collection_requests: List[str] = []
+        self.product_requests: List[str] = []
+        self.exclude_requests: List[str] = []
 
-        self.post_init(custom_args)
+        self.post_init(custom_args or [])
 
-    def post_init(self, custom_args=None):
+    def post_init(self, custom_args: List = []) -> None:
         """
         Post initialization method
 
@@ -50,7 +55,7 @@ class PackageManagerBase(object):
         """
         pass
 
-    def request_package(self, name):
+    def request_package(self, name: str) -> None:
         """
         Queue a package request
 
@@ -60,7 +65,7 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def request_collection(self, name):
+    def request_collection(self, name: str) -> None:
         """
         Queue a package collection
 
@@ -70,7 +75,7 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def request_product(self, name):
+    def request_product(self, name: str) -> None:
         """
         Queue a product request
 
@@ -80,17 +85,11 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def request_package_lock(self, name):
-        """
-        Queue a package exclusion(skip) request
+    @decommissioned
+    def request_package_lock(self, name: str) -> None:
+        pass  # pragma: no cover
 
-        OBSOLETE: Will be removed 2019-06-05
-
-        Kept for API compatbility Method calls: request_package_exclusion
-        """
-        return self.request_package_exclusion(name)
-
-    def request_package_exclusion(self, name):
+    def request_package_exclusion(self, name: str) -> None:
         """
         Queue a package exclusion(skip) request
 
@@ -100,7 +99,9 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def process_install_requests_bootstrap(self):
+    def process_install_requests_bootstrap(
+        self, root_bind: RootBind = None
+    ) -> command_call_type:
         """
         Process package install requests for bootstrap phase (no chroot)
 
@@ -108,7 +109,7 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def process_install_requests(self):
+    def process_install_requests(self) -> command_call_type:
         """
         Process package install requests for image phase (chroot)
 
@@ -116,7 +117,7 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def process_delete_requests(self, force=False):
+    def process_delete_requests(self, force: bool = False) -> command_call_type:
         """
         Process package delete requests (chroot)
 
@@ -126,7 +127,7 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def update(self):
+    def update(self) -> command_call_type:
         """
         Process package update requests (chroot)
 
@@ -134,7 +135,7 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def process_only_required(self):
+    def process_only_required(self) -> None:
         """
         Setup package processing only for required packages
 
@@ -142,7 +143,7 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def process_plus_recommended(self):
+    def process_plus_recommended(self) -> None:
         """
         Setup package processing to also include recommended dependencies
 
@@ -150,41 +151,51 @@ class PackageManagerBase(object):
         """
         raise NotImplementedError
 
-    def match_package_installed(self, package_list, log_line):
+    def match_package_installed(
+        self, package_name: str, package_manager_output: str
+    ) -> bool:
         """
         Match expression to indicate a package has been installed
 
         Implementation in specialized package manager class
 
-        :param list package_list: unused
-        :param str log_line: unused
+        :param str package_name: unused
+        :param str package_manager_output: unused
+
+        :return: True|False
+
+        :rtype: bool
         """
         raise NotImplementedError
 
-    def match_package_deleted(self, package_list, log_line):
+    def match_package_deleted(
+        self, package_name: str, package_manager_output: str
+    ) -> bool:
         """
         Match expression to indicate a package has been deleted
 
         Implementation in specialized package manager class
 
-        :param list package_list: unused
-        :param str log_line: unused
+        :param str package_name: unused
+        :param str package_manager_output: unused
+
+        :return: True|False
+
+        :rtype: bool
         """
         raise NotImplementedError
 
-    def database_consistent(self):
-        """
-        OBSOLETE: Will be removed 2019-06-05
-        """
-        pass
+    @decommissioned
+    def database_consistent(self) -> None:
+        pass  # pragma: no cover
 
-    def dump_reload_package_database(self, version=45):
-        """
-        OBSOLETE: Will be removed 2019-06-05
-        """
-        pass
+    @decommissioned
+    def dump_reload_package_database(self, version: int = 45) -> None:
+        pass  # pragma: no cover
 
-    def post_process_install_requests_bootstrap(self):
+    def post_process_install_requests_bootstrap(
+        self, root_bind: RootBind = None
+    ) -> None:
         """
         Process extra code required after bootstrapping
 
@@ -192,7 +203,8 @@ class PackageManagerBase(object):
         """
         pass
 
-    def has_failed(self, returncode):
+    @staticmethod
+    def has_failed(returncode: int) -> bool:
         """
         Evaluate given result return code
 
@@ -207,7 +219,16 @@ class PackageManagerBase(object):
         """
         return True if returncode != 0 else False
 
-    def cleanup_requests(self):
+    def clean_leftovers(self) -> None:
+        """
+        Cleans package manager related data not needed in the
+        resulting image such as custom macros
+
+        Implementation in specialized package manager class
+        """
+        pass
+
+    def cleanup_requests(self) -> None:
         """
         Cleanup request queues
         """

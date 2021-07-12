@@ -16,46 +16,49 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 
 # project
 from kiwi.defaults import Defaults
-from kiwi.logger import log
 from kiwi.runtime_config import RuntimeConfig
 from kiwi.oci_tools import OCI
 from kiwi.utils.compress import Compress
 
+log = logging.getLogger('kiwi')
 
-class ContainerImageOCI(object):
+
+class ContainerImageOCI:
     """
     Create oci container from a root directory
 
     :param string root_dir: root directory path name
     :param dict custom_args:
-        Custom processing arguments defined as hash keys:
 
-        Example
+    Custom processing arguments defined as hash keys:
 
-        .. code:: python
+    Example
 
-            {
-                'container_name': 'name',
-                'container_tag': '1.0',
-                'additional_tags': ['current', 'foobar'],
-                'entry_command': ['/bin/bash', '-x'],
-                'entry_subcommand': ['ls', '-l'],
-                'maintainer': 'tux',
-                'user': 'root',
-                'workingdir': '/root',
-                'expose_ports': ['80', '42'],
-                'volumes': ['/var/log', '/tmp'],
-                'environment': {'PATH': '/bin'},
-                'labels': {'name': 'value'},
-                'history': {
-                    'created_by': 'some explanation here',
-                    'comment': 'some comment here',
-                    'author': 'tux'
-                }
+    .. code:: python
+
+        {
+            'container_name': 'name',
+            'container_tag': '1.0',
+            'additional_tags': ['current', 'foobar'],
+            'entry_command': ['/bin/bash', '-x'],
+            'entry_subcommand': ['ls', '-l'],
+            'maintainer': 'tux',
+            'user': 'root',
+            'workingdir': '/root',
+            'expose_ports': ['80', '42'],
+            'volumes': ['/var/log', '/tmp'],
+            'environment': {'PATH': '/bin'},
+            'labels': {'name': 'value'},
+            'history': {
+                'created_by': 'some explanation here',
+                'comment': 'some comment here',
+                'author': 'tux'
             }
+        }
     """
     def __init__(self, root_dir, transport, custom_args=None):
         self.root_dir = root_dir
@@ -92,11 +95,6 @@ class ContainerImageOCI(object):
             self.oci_config['container_tag'] = \
                 Defaults.get_default_container_tag()
 
-        if 'entry_command' not in self.oci_config and \
-                'entry_subcommand' not in self.oci_config:
-            self.oci_config['entry_subcommand'] = \
-                Defaults.get_default_container_subcommand()
-
         if 'history' not in self.oci_config:
             self.oci_config['history'] = {}
         if 'created_by' not in self.oci_config['history']:
@@ -110,13 +108,14 @@ class ContainerImageOCI(object):
         :param string filename: archive file name
         :param string base_image: archive used as a base image
         """
-        exclude_list = Defaults.get_exclude_list_for_root_data_sync()
-        exclude_list.append('boot')
-        exclude_list.append('dev')
-        exclude_list.append('sys')
-        exclude_list.append('proc')
+        exclude_list = Defaults.\
+            get_exclude_list_for_root_data_sync() + Defaults.\
+            get_exclude_list_from_custom_exclude_files(self.root_dir)
+        exclude_list.append('dev/*')
+        exclude_list.append('sys/*')
+        exclude_list.append('proc/*')
 
-        oci = OCI()
+        oci = OCI.new()
         if base_image:
             oci.import_container_image(
                 'oci-archive:{0}:{1}'.format(
@@ -124,6 +123,11 @@ class ContainerImageOCI(object):
                 )
             )
         else:
+            # Apply default subcommand only for base images
+            if 'entry_command' not in self.oci_config and \
+                    'entry_subcommand' not in self.oci_config:
+                self.oci_config['entry_subcommand'] = \
+                    Defaults.get_default_container_subcommand()
             oci.init_container()
 
         image_ref = '{0}:{1}'.format(
@@ -168,8 +172,10 @@ class ContainerImageOCI(object):
                 if line.startswith('BUILD_DISTURL') and '=' in line:
                     disturl = line.split('=')[1].lstrip('\'\"').rstrip('\n\'\"')
                     if disturl:
-                        self.oci_config['labels'] = {
-                            'org.openbuildservice.disturl': disturl
-                        }
+                        label = {'org.openbuildservice.disturl': disturl}
+                        if self.oci_config.get('labels'):
+                            self.oci_config['labels'].update(label)
+                        else:
+                            self.oci_config['labels'] = label
                         return
             log.warning('Could not find BUILD_DISTURL inside .buildenv')

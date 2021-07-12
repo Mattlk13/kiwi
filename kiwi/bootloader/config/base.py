@@ -16,21 +16,25 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
-import platform
+import re
+import logging
 from collections import namedtuple
 
 # project
-from kiwi.logger import log
+from kiwi.mount_manager import MountManager
 from kiwi.storage.setup import DiskSetup
 from kiwi.path import Path
 from kiwi.defaults import Defaults
+from kiwi.utils.block import BlockID
 
 from kiwi.exceptions import (
     KiwiBootLoaderTargetError
 )
 
+log = logging.getLogger('kiwi')
 
-class BootLoaderConfigBase(object):
+
+class BootLoaderConfigBase:
     """
     **Base class for bootloader configuration**
 
@@ -42,8 +46,17 @@ class BootLoaderConfigBase(object):
         self.root_dir = root_dir
         self.boot_dir = boot_dir or root_dir
         self.xml_state = xml_state
-        self.arch = platform.machine()
+        self.arch = Defaults.get_platform_name()
 
+        self.volumes_mount = []
+        self.root_mount = None
+        self.boot_mount = None
+        self.efi_mount = None
+        self.device_mount = None
+        self.proc_mount = None
+        self.tmp_mount = None
+
+        self.root_filesystem_is_overlay = xml_state.build_type.get_overlayroot()
         self.post_init(custom_args)
 
     def post_init(self, custom_args):
@@ -64,8 +77,19 @@ class BootLoaderConfigBase(object):
         """
         raise NotImplementedError
 
+    def write_meta_data(self, root_device=None, boot_options=''):
+        """
+        Write bootloader setup meta data files
+
+        :param string root_device: root device node
+        :param string boot_options: kernel options as string
+
+        Implementation in specialized bootloader class optional
+        """
+        pass
+
     def setup_disk_image_config(
-        self, boot_uuid, root_uuid, hypervisor, kernel, initrd, boot_options
+        self, boot_uuid, root_uuid, hypervisor, kernel, initrd, boot_options={}
     ):
         """
         Create boot config file to boot from disk.
@@ -75,7 +99,15 @@ class BootLoaderConfigBase(object):
         :param string hypervisor: hypervisor name
         :param string kernel: kernel name
         :param string initrd: initrd name
-        :param string boot_options: kernel options as string
+        :param dict boot_options:
+            custom options dictionary required to setup the bootloader.
+            The scope of the options covers all information needed
+            to setup and configure the bootloader and gets effective
+            in the individual implementation. boot_options should
+            not be mixed up with commandline options used at boot time.
+            This information is provided from the get_*_cmdline
+            methods. The contents of the dictionary can vary between
+            bootloaders or even not be needed
 
         Implementation in specialized bootloader class required
         """
@@ -198,7 +230,7 @@ class BootLoaderConfigBase(object):
 
         :rtype: int
         """
-        timeout_seconds = self.xml_state.build_type.get_boottimeout()
+        timeout_seconds = self.xml_state.get_build_type_bootloader_timeout()
         if timeout_seconds is None:
             timeout_seconds = Defaults.get_default_boot_timeout_seconds()
         return timeout_seconds
@@ -229,11 +261,11 @@ class BootLoaderConfigBase(object):
             return False
         return True
 
-    def get_boot_cmdline(self, uuid=None):
+    def get_boot_cmdline(self, boot_device=None):
         """
         Boot commandline arguments passed to the kernel
 
-        :param string uuid: boot device UUID
+        :param string boot_device: boot device node
 
         :return: kernel boot arguments
 
@@ -243,8 +275,8 @@ class BootLoaderConfigBase(object):
         custom_cmdline = self.xml_state.build_type.get_kernelcmdline()
         if custom_cmdline:
             cmdline += ' ' + custom_cmdline
-        custom_root = self._get_root_cmdline_parameter(uuid)
-        if custom_root:
+        custom_root = self._get_root_cmdline_parameter(boot_device)
+        if custom_root and custom_root not in cmdline:
             cmdline += ' ' + custom_root
         return cmdline.strip()
 
@@ -450,35 +482,108 @@ class BootLoaderConfigBase(object):
         else:
             return gfxmode
 
-    def _get_root_cmdline_parameter(self, uuid):
-        firmware = self.xml_state.build_type.get_firmware()
-        initrd_system = self.xml_state.get_initrd_system()
+    def _mount_system(
+        self, root_device, boot_device, efi_device=None, volumes=None
+    ):
+        self.root_mount = MountManager(
+            device=root_device
+        )
+        if 's390' in self.arch:
+            self.boot_mount = MountManager(
+                device=boot_device,
+                mountpoint=self.root_mount.mountpoint + '/boot/zipl'
+            )
+        else:
+            self.boot_mount = MountManager(
+                device=boot_device,
+                mountpoint=self.root_mount.mountpoint + '/boot'
+            )
+        if efi_device:
+            self.efi_mount = MountManager(
+                device=efi_device,
+                mountpoint=self.root_mount.mountpoint + '/boot/efi'
+            )
+
+        self.root_mount.mount()
+
+        if not self.root_mount.device == self.boot_mount.device:
+            self.boot_mount.mount()
+
+        if efi_device:
+            self.efi_mount.mount()
+
+        if volumes:
+            for volume_path in Path.sort_by_hierarchy(
+                sorted(volumes.keys())
+            ):
+                volume_mount = MountManager(
+                    device=volumes[volume_path]['volume_device'],
+                    mountpoint=self.root_mount.mountpoint + '/' + volume_path
+                )
+                self.volumes_mount.append(volume_mount)
+                volume_mount.mount(
+                    options=[volumes[volume_path]['volume_options']]
+                )
+
+        if self.root_filesystem_is_overlay:
+            # In case of an overlay root system all parts of the rootfs
+            # are read-only by squashfs except for the extra boot partition.
+            # However tools like grub's mkconfig creates temporary files
+            # at call time and therefore /tmp needs to be writable during
+            # the call time of the tools
+            self.tmp_mount = MountManager(
+                device='/tmp',
+                mountpoint=self.root_mount.mountpoint + '/tmp'
+            )
+            self.tmp_mount.bind_mount()
+
+        self.device_mount = MountManager(
+            device='/dev',
+            mountpoint=self.root_mount.mountpoint + '/dev'
+        )
+        self.proc_mount = MountManager(
+            device='/proc',
+            mountpoint=self.root_mount.mountpoint + '/proc'
+        )
+        self.device_mount.bind_mount()
+        self.proc_mount.bind_mount()
+
+    def _get_root_cmdline_parameter(self, boot_device):
         cmdline = self.xml_state.build_type.get_kernelcmdline()
+        persistency_type = self.xml_state.build_type.get_devicepersistency()
         if cmdline and 'root=' in cmdline:
             log.info(
                 'Kernel root device explicitly set via kernelcmdline'
             )
-            return None
-
-        want_root_cmdline_parameter = False
-        if firmware and 'ec2' in firmware:
-            # EC2 requires to specifiy the root device in the bootloader
-            # configuration. This is because the used pvgrub or hvmloader
-            # reads this information and passes it to the guest configuration
-            # which has an impact on the devices attached to the guest.
-            want_root_cmdline_parameter = True
-
-        if initrd_system == 'dracut':
-            # When using a dracut initrd we have to specify the location
-            # of the root device
-            want_root_cmdline_parameter = True
-
-        if want_root_cmdline_parameter:
-            if uuid and self.xml_state.build_type.get_overlayroot():
-                return 'root=overlay:UUID={0}'.format(uuid)
-            elif uuid:
-                return 'root=UUID={0} rw'.format(uuid)
+            root_search = re.search(r'(root=(.*)[ ]+|root=(.*)$)', cmdline)
+            if root_search:
+                return root_search.group(1)
+        if boot_device:
+            block_operation = BlockID(boot_device)
+            blkid_type = 'LABEL' if persistency_type == 'by-label' else 'UUID'
+            location = block_operation.get_blkid(blkid_type)
+            if self.xml_state.build_type.get_overlayroot():
+                return f'root=overlay:{blkid_type}={location}'
             else:
-                log.warning(
-                    'root=UUID=<uuid> setup requested, but uuid is not provided'
-                )
+                return f'root={blkid_type}={location} rw'
+        else:
+            log.warning(
+                'No explicit root= cmdline provided'
+            )
+
+    def __del__(self):
+        log.info('Cleaning up %s instance', type(self).__name__)
+        for volume_mount in reversed(self.volumes_mount):
+            volume_mount.umount()
+        if self.device_mount:
+            self.device_mount.umount()
+        if self.proc_mount:
+            self.proc_mount.umount()
+        if self.efi_mount:
+            self.efi_mount.umount()
+        if self.tmp_mount:
+            self.tmp_mount.umount()
+        if self.boot_mount:
+            self.boot_mount.umount()
+        if self.root_mount:
+            self.root_mount.umount()

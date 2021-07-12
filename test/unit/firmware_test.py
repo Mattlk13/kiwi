@@ -1,17 +1,15 @@
-from mock import patch
-
+from pytest import raises
 import mock
 
-from .test_helper import raises
+from kiwi.firmware import FirmWare
+from kiwi.defaults import Defaults
 
 from kiwi.exceptions import KiwiNotImplementedError
-from kiwi.firmware import FirmWare
 
 
-class TestFirmWare(object):
-    @patch('platform.machine')
-    def setup(self, mock_platform):
-        mock_platform.return_value = 'x86_64'
+class TestFirmWare:
+    def setup(self):
+        Defaults.set_platform_name('x86_64')
         xml_state = mock.Mock()
         xml_state.build_type.get_firmware = mock.Mock()
         xml_state.build_type.get_firmware.return_value = 'bios'
@@ -33,45 +31,42 @@ class TestFirmWare(object):
         xml_state.build_type.get_firmware.return_value = 'ec2'
         self.firmware_ec2 = FirmWare(xml_state)
 
-        mock_platform.return_value = 's390x'
+        Defaults.set_platform_name('s390x')
         xml_state.build_type.get_firmware.return_value = None
-        xml_state.build_type.get_zipl_targettype = mock.Mock()
-        xml_state.build_type.get_zipl_targettype.return_value = 'LDL'
-        self.firmware_s390_ldl = FirmWare(xml_state)
+        xml_state.get_build_type_bootloader_targettype = mock.Mock()
 
-        xml_state.build_type.get_zipl_targettype.return_value = 'CDL'
+        xml_state.get_build_type_bootloader_targettype.return_value = 'CDL'
         self.firmware_s390_cdl = FirmWare(xml_state)
 
-        xml_state.build_type.get_zipl_targettype.return_value = 'SCSI'
+        xml_state.get_build_type_bootloader_targettype.return_value = 'SCSI'
         self.firmware_s390_scsi = FirmWare(xml_state)
 
-        mock_platform.return_value = 'ppc64le'
+        Defaults.set_platform_name('ppc64le')
         xml_state.build_type.get_firmware.return_value = 'ofw'
         self.firmware_ofw = FirmWare(xml_state)
 
         xml_state.build_type.get_firmware.return_value = 'opal'
         self.firmware_opal = FirmWare(xml_state)
 
-        mock_platform.return_value = 'arm64'
+        Defaults.set_platform_name('x86_64')
 
-    @raises(KiwiNotImplementedError)
     def test_firmware_unsupported(self):
         xml_state = mock.Mock()
         xml_state.build_type.get_firmware = mock.Mock(
             return_value='bogus'
         )
-        FirmWare(xml_state)
+        with raises(KiwiNotImplementedError):
+            FirmWare(xml_state)
 
     def test_get_partition_table_type(self):
         assert self.firmware_bios.get_partition_table_type() == 'msdos'
         assert self.firmware_efi.get_partition_table_type() == 'gpt'
         assert self.firmware_efi_mbr.get_partition_table_type() == 'msdos'
-        assert self.firmware_s390_ldl.get_partition_table_type() == 'dasd'
         assert self.firmware_s390_cdl.get_partition_table_type() == 'dasd'
         assert self.firmware_s390_scsi.get_partition_table_type() == 'msdos'
 
     def test_get_partition_table_type_ppc_ofw_mode(self):
-        assert self.firmware_ofw.get_partition_table_type() == 'msdos'
+        assert self.firmware_ofw.get_partition_table_type() == 'gpt'
 
     def test_get_partition_table_type_ppc_opal_mode(self):
         assert self.firmware_opal.get_partition_table_type() == 'gpt'
@@ -98,9 +93,11 @@ class TestFirmWare(object):
 
     def test_ofw_mode(self):
         assert self.firmware_ofw.ofw_mode() is True
+        assert self.firmware_bios.ofw_mode() is False
 
     def test_opal_mode(self):
         assert self.firmware_opal.opal_mode() is True
+        assert self.firmware_bios.opal_mode() is False
 
     def test_get_legacy_bios_partition_size(self):
         assert self.firmware_bios.get_legacy_bios_partition_size() == 0

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# kiwi documentation build configuration file, created by
-# sphinx-quickstart on Fri Feb  5 11:03:18 2016.
+# KIWI NG documentation build configuration file
 #
 import sys
 from os.path import abspath, dirname, join, normpath
@@ -62,23 +61,38 @@ def setup(app):
     app.add_config_value('prolog_replacements', {}, True)
     app.connect('source-read', prologReplace)
     app.connect("autodoc-process-docstring", remove_module_docstring)
-    app.add_stylesheet('css/custom.css')
+    app.add_css_file('css/custom.css')
 
 
 prolog_replacements = {
-    '{exc_image_base_name}': 'LimeJeOS-Leap-15.1',
-    '{exc_description}': 'suse-leap-15.1-JeOS',
-    '{exc_netboot}': 'netboot/suse-leap15.1',
-    '{exc_os_version}': '15.1',
-    '{exc_image_version}': '1.15.1',
-    '{exc_repo}': 'obs://openSUSE:Leap:15.1/standard',
+    '{exc_image_base_name_pxe}': 'kiwi-test-image-pxe',
+    '{exc_image_base_name_vagrant}': 'kiwi-test-image-vagrant',
+    '{exc_image_base_name_disk}': 'kiwi-test-image-disk',
+    '{exc_image_base_name_disk_simple}': 'kiwi-test-image-disk-simple',
+    '{exc_image_base_name_live}': 'kiwi-test-image-live',
+    '{exc_image_base_name_docker}': 'kiwi-test-image-docker',
+    '{exc_netboot}': 'netboot/suse-tumbleweed',
+    '{exc_description_pxe}': 'x86/tumbleweed/test-image-pxe',
+    '{exc_description_vagrant}': 'x86/leap/test-image-vagrant',
+    '{exc_description_disk}': 'x86/leap/test-image-disk',
+    '{exc_description_disk_simple}': 'x86/leap/test-image-disk-simple',
+    '{exc_description_live}': 'x86/leap/test-image-live',
+    '{exc_description_wsl}': 'x86/tumbleweed/test-image-wsl',
+    '{exc_description_docker}': 'x86/leap/test-image-docker',
+    '{exc_os_version}': '15.3',
+    '{exc_image_version}': '1.15.3',
+    '{exc_repo_leap}': 'obs://openSUSE:Leap:15.3/standard',
+    '{exc_repo_tumbleweed}': 'http://download.opensuse.org/tumbleweed/repo/oss',
     '{exc_kiwi_repo}':
-        'obs://Virtualization:Appliances:Builder/openSUSE_Leap_15.1',
-    '{schema_version}': '7.1'
+        'obs://Virtualization:Appliances:Builder/openSUSE_Leap_15.3',
+    '{schema_version}': '7.4',
+    '{kiwi}': 'KIWI NG',
+    '{kiwi-product}': 'KIWI Next Generation (KIWI NG)',
+    '{kiwi-legacy}': 'KIWI Legacy'
 }
 
 latex_documents = [
-    ('index', 'kiwi.tex', 'KIWI Documentation', 'Marcus Schäfer', 'manual')
+    ('index', 'kiwi.tex', 'KIWI NG Documentation', 'Marcus Schäfer', 'manual')
 ]
 latex_elements = {
     'papersize': 'a4paper',
@@ -117,8 +131,8 @@ master_doc = 'index'
 default_role="py:obj"
 
 # General information about the project.
-project = 'kiwi'
-copyright = '2019, Marcus Schäfer'
+project = 'KIWI NG'
+copyright = '2020, Marcus Schäfer'
 author = 'Marcus Schäfer'
 
 # The version info for the project you're documenting, acts as replacement for
@@ -126,7 +140,7 @@ author = 'Marcus Schäfer'
 # built documents.
 #
 # The short X.Y version.
-version = '9.18.12'
+version = '9.23.43'
 # The full version, including alpha/beta/rc tags.
 release = version
 

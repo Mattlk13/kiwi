@@ -16,15 +16,17 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 import collections
 
 # project
-from .command import Command
-from .logger import log
-from .exceptions import KiwiFileAccessError
+from kiwi.command import Command
+from kiwi.exceptions import KiwiFileAccessError
+
+log = logging.getLogger('kiwi')
 
 
-class Path(object):
+class Path:
     """
     **Directory path helpers**
     """
@@ -102,9 +104,10 @@ class Path(object):
 
         :param string path: path name
         """
-        Command.run(
-            ['mkdir', '-p', path]
-        )
+        if not os.path.exists(path):
+            Command.run(
+                ['mkdir', '-p', path]
+            )
 
     @staticmethod
     def wipe(path):
@@ -113,9 +116,10 @@ class Path(object):
 
         :param string path: path name
         """
-        Command.run(
-            ['rm', '-r', '-f', path]
-        )
+        if os.path.exists(path):
+            Command.run(
+                ['rm', '-r', '-f', path]
+            )
 
     @staticmethod
     def remove(path):
@@ -129,15 +133,20 @@ class Path(object):
         )
 
     @staticmethod
-    def remove_hierarchy(path):
+    def remove_hierarchy(root, path):
         """
         Recursively remove an empty path and its sub directories
-        ignore non empty or protected paths and leave them untouched
+        starting at a given root directory. Ignore non empty or
+        protected paths and leave them untouched
 
-        :param string path: path name
+        :param string root: start at directory
+        :param string path: path name below root
         """
         Command.run(
-            ['rmdir', '--ignore-fail-on-non-empty', path]
+            [
+                'rmdir', '--ignore-fail-on-non-empty',
+                os.path.normpath(os.sep.join([root, path]))
+            ]
         )
         path_elements = path.split(os.sep)
         protected_elements = [
@@ -149,18 +158,60 @@ class Path(object):
                 if path_elements[path_index - 1] in protected_elements:
                     log.warning(
                         'remove_hierarchy: path {0} is protected'.format(
-                            sub_path
+                            os.path.normpath(os.sep.join([root, sub_path]))
                         )
                     )
                     return
                 Command.run(
-                    ['rmdir', '--ignore-fail-on-non-empty', sub_path]
+                    [
+                        'rmdir', '--ignore-fail-on-non-empty',
+                        os.path.normpath(os.sep.join([root, sub_path]))
+                    ]
                 )
+
+    @staticmethod
+    def move_to_root(root, elements):
+        """
+        Change the given path elements to a new root directory
+
+        :param str root: the root path to trim
+        :param list elements: list of path names
+
+        :return: changed elements
+
+        :rtype: list
+        """
+        result = []
+        for element in elements:
+            normalized_element = os.path.normpath(element)
+            result.append(
+                normalized_element.replace(
+                    os.path.normpath(root), os.sep
+                ).replace('{0}{0}'.format(os.sep), os.sep)
+            )
+        return result
+
+    @staticmethod
+    def rebase_to_root(root, elements):
+        """
+        Include the root prefix for the given paths elements
+
+        :param str root: the new root path
+        :param list elements: list of path names
+
+        :return: changed elements
+
+        :rtype: list
+        """
+        result = []
+        for element in elements:
+            result.append(os.path.normpath(os.sep.join([root, element])))
+        return result
 
     @staticmethod
     def which(
         filename, alternative_lookup_paths=None,
-        custom_env=None, access_mode=None
+        custom_env=None, access_mode=None, root_dir=None
     ):
         """
         Lookup file name in PATH
@@ -171,6 +222,7 @@ class Path(object):
         :param int access_mode: one of the os access modes or a combination of
          them (os.R_OK, os.W_OK and os.X_OK). If the provided access mode
          does not match the file is considered not existing
+        :param str root_dir: the root path to look at
 
         :return: absolute path to file or None
 
@@ -187,6 +239,8 @@ class Path(object):
             lookup_paths = system_path.split(os.pathsep)
         if alternative_lookup_paths:
             lookup_paths += alternative_lookup_paths
+        if root_dir:
+            lookup_paths = Path.rebase_to_root(root_dir, lookup_paths)
         multipart_message[0] += 'in paths "%s"' % ':'.join(lookup_paths)
         for path in lookup_paths:
             location = os.path.join(path, filename)

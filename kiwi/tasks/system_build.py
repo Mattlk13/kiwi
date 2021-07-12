@@ -16,8 +16,8 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 """
-usage: kiwi system build -h | --help
-       kiwi system build --description=<directory> --target-dir=<directory>
+usage: kiwi-ng system build -h | --help
+       kiwi-ng system build --description=<directory> --target-dir=<directory>
            [--allow-existing-root]
            [--clear-cache]
            [--ignore-repos]
@@ -25,12 +25,13 @@ usage: kiwi system build -h | --help
            [--set-repo=<source,type,alias,priority,imageinclude,package_gpgcheck>]
            [--add-repo=<source,type,alias,priority,imageinclude,package_gpgcheck>...]
            [--add-package=<name>...]
+           [--add-bootstrap-package=<name>...]
            [--delete-package=<name>...]
            [--set-container-derived-from=<uri>]
            [--set-container-tag=<name>]
            [--add-container-label=<label>...]
            [--signing-key=<key-file>...]
-       kiwi system build help
+       kiwi-ng system build help
 
 commands:
     build
@@ -40,6 +41,8 @@ commands:
         show manual page for build command
 
 options:
+    --add-bootstrap-package=<name>
+        install the given package name as part of the early bootstrap process
     --add-package=<name>
         install the given package name
     --add-repo=<source,type,alias,priority,imageinclude,package_gpgcheck>
@@ -85,6 +88,7 @@ options:
         the target directory to store the system image file(s)
 """
 import os
+import logging
 
 # project
 from kiwi.tasks.base import CliTask
@@ -96,8 +100,8 @@ from kiwi.system.profile import Profile
 from kiwi.defaults import Defaults
 from kiwi.privileges import Privileges
 from kiwi.path import Path
-from kiwi.logger import log
-from kiwi.utils.rpm import Rpm
+
+log = logging.getLogger('kiwi')
 
 
 class SystemBuildTask(CliTask):
@@ -109,7 +113,7 @@ class SystemBuildTask(CliTask):
     * :attr:`manual`
         Instance of Help
     """
-    def process(self):                                      # noqa: C901
+    def process(self):
         """
         Build a system image from the specified description. The
         build command combines the prepare and create commands
@@ -192,9 +196,21 @@ class SystemBuildTask(CliTask):
         )
         manager = system.setup_repositories(
             self.command_args['--clear-cache'],
-            self.command_args['--signing-key']
+            self.command_args['--signing-key'],
+            self.global_args['--target-arch']
         )
-        system.install_bootstrap(manager)
+        system.install_bootstrap(
+            manager, self.command_args['--add-bootstrap-package']
+        )
+
+        setup = SystemSetup(
+            self.xml_state, image_root
+        )
+        setup.import_description()
+
+        # call post_bootstrap.sh script if present
+        setup.call_post_bootstrap_script()
+
         system.install_system(
             manager
         )
@@ -211,13 +227,10 @@ class SystemBuildTask(CliTask):
 
         defaults = Defaults()
         defaults.to_profile(profile)
-
-        setup = SystemSetup(
-            self.xml_state, image_root
+        profile.create(
+            Defaults.get_profile_file(image_root)
         )
-        setup.import_shell_environment(profile)
 
-        setup.import_description()
         setup.import_overlay_files()
         setup.import_image_identifier()
         setup.setup_groups()
@@ -233,6 +246,8 @@ class SystemBuildTask(CliTask):
 
         # setup permanent image repositories after cleanup
         setup.import_repositories_marked_as_imageinclude()
+
+        # call config.sh script if present
         setup.call_config_script()
 
         # handle uninstall package requests, gracefully uninstall
@@ -244,9 +259,7 @@ class SystemBuildTask(CliTask):
         system.pinch_system(force=True)
 
         # delete any custom rpm macros created
-        Rpm(
-            image_root, Defaults.get_custom_rpm_image_macro_name()
-        ).wipe_config()
+        system.clean_package_manager_leftovers()
 
         # make sure system instance is cleaned up now
         del system
@@ -257,7 +270,13 @@ class SystemBuildTask(CliTask):
         del setup
 
         log.info('Creating system image')
-        image_builder = ImageBuilder(
+        self.run_checks(
+            {
+                'check_dracut_module_versions_compatible_to_kiwi':
+                    [image_root]
+            }
+        )
+        image_builder = ImageBuilder.new(
             self.xml_state,
             abs_target_dir_path,
             image_root,

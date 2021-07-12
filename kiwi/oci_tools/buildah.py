@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import logging
 import os
 import random
 import string
@@ -24,8 +25,9 @@ from kiwi.oci_tools.base import OCIBase
 from kiwi.command import Command
 from kiwi.path import Path
 from kiwi.defaults import Defaults
-from kiwi.logger import log
 from kiwi.exceptions import KiwiBuildahError
+
+log = logging.getLogger('kiwi')
 
 
 class OCIBuildah(OCIBase):
@@ -159,7 +161,7 @@ class OCIBuildah(OCIBase):
         self._sync_data(
             ''.join([root_dir, os.sep]), self.oci_root_dir,
             exclude_list=exclude_list,
-            options=['-a', '-H', '-X', '-A', '--delete']
+            options=Defaults.get_sync_options() + ['--delete']
         )
 
     def import_rootfs(self, root_dir, exclude_list=None):
@@ -171,7 +173,8 @@ class OCIBuildah(OCIBase):
         """
         self._sync_data(
             os.sep.join([self.oci_root_dir, '']), root_dir,
-            exclude_list=exclude_list, options=['-a', '-H', '-X', '-A']
+            exclude_list=exclude_list,
+            options=Defaults.get_sync_options()
         )
 
     def repack(self, oci_config):
@@ -221,7 +224,7 @@ class OCIBuildah(OCIBase):
         self.working_image = output.output.rstrip()
         self.working_container = None
 
-    @classmethod                                                # noqa:C901
+    @classmethod
     def _process_oci_config_to_arguments(self, oci_config):
         """
         Process the oci configuration dictionary into a list of arguments

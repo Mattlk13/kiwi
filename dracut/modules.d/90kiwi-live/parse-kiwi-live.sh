@@ -2,6 +2,7 @@
 # live images are specified with
 # root=live:CDLABEL=label
 # root=live:AOEINTERFACE=name
+type getOverlayBaseDirectory >/dev/null 2>&1 || . /lib/kiwi-live-lib.sh
 
 [ -z "${root}" ] && root=$(getarg root=)
 
@@ -13,6 +14,11 @@ fi
 
 modprobe -q loop
 
+need_network=0
+if getargbool 0 rd.kiwi.live.pxe; then
+    need_network=1
+fi
+
 case "${liveroot}" in
     live:CDLABEL=*|CDLABEL=*) \
         root="${root#live:}"
@@ -20,9 +26,11 @@ case "${liveroot}" in
         root="live:/dev/disk/by-label/${root#CDLABEL=}"
         rootok=1 ;;
     live:AOEINTERFACE=*|AOEINTERFACE=*) \
+        modprobe -q aoe
         root="${root#live:}"
         root="${root//\//\\x2f}"
         root="live:aoe:/dev/etherd/${root#AOEINTERFACE=}"
+        need_network=1
         rootok=1 ;;
 esac
 
@@ -30,11 +38,21 @@ esac
 
 info "root was ${liveroot}, is now ${root}"
 
+# create network setup if needed
+if [ "${need_network}" = "1" ];then
+    echo "rd.neednet=1" > /etc/cmdline.d/kiwi-generated.conf
+    if ! getarg "ip="; then
+        echo "ip=dhcp" >> /etc/cmdline.d/kiwi-generated.conf
+    fi
+fi
+
 # make sure that init doesn't complain
 [ -z "${root}" ] && root="live"
 
-wait_for_dev -n /run/rootfsbase
-wait_for_dev -n /run/overlayfs/rw
-wait_for_dev -n /run/overlayfs/work
+OVERLAY_BASE="$(getOverlayBaseDirectory)"
+
+wait_for_dev -n "${OVERLAY_BASE}/rootfsbase"
+wait_for_dev -n "${OVERLAY_BASE}/overlayfs/rw"
+wait_for_dev -n "${OVERLAY_BASE}/overlayfs/work"
 
 return 0

@@ -7,7 +7,7 @@ from .test_helper import argv_kiwi_tests
 import kiwi.kiwi_compat
 
 
-class TestKiwiCompat(object):
+class TestKiwiCompat:
     def teardown(self):
         sys.argv = argv_kiwi_tests
 
@@ -27,7 +27,7 @@ class TestKiwiCompat(object):
         sys.argv = [
             'kiwicompat',
             '--create', 'root_dir',
-            '--type', 'vmx',
+            '--type', 'oem',
             '-d', 'destination'
         ]
         mock_exec.side_effect = OSError('exec failed')
@@ -43,7 +43,7 @@ class TestKiwiCompat(object):
         sys.argv = [
             'kiwicompat',
             '--create', 'root_dir',
-            '--type', 'vmx',
+            '--type', 'oem',
             '-d', 'destination'
         ]
         kiwi.kiwi_compat.main()
@@ -70,7 +70,7 @@ class TestKiwiCompat(object):
         sys.argv = [
             'kiwicompat',
             '--build', 'description',
-            '--type', 'vmx',
+            '--type', 'oem',
             '--ignore-repos',
             '--set-repo', 'repo_a',
             '--set-repoalias', 'a', '--set-repopriority', '1',
@@ -92,7 +92,7 @@ class TestKiwiCompat(object):
                 'kiwi',
                 '--logfile', 'logfile',
                 '--debug',
-                '--type', 'vmx',
+                '--type', 'oem',
                 '--profile', 'profile',
                 'system', 'build',
                 '--description', 'description',
@@ -111,14 +111,14 @@ class TestKiwiCompat(object):
         sys.argv = [
             'kiwicompat',
             '--create', 'root_dir',
-            '--type', 'vmx',
+            '--type', 'oem',
             '-d', 'destination'
         ]
         kiwi.kiwi_compat.main()
         mock_exec.assert_called_once_with(
             'kiwi-ng', [
                 'kiwi',
-                '--type', 'vmx',
+                '--type', 'oem',
                 'system', 'create',
                 '--root', 'root_dir',
                 '--target-dir', 'destination'

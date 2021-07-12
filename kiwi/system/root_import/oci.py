@@ -16,14 +16,16 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 
 # project
 from kiwi.system.root_import.base import RootImportBase
-from kiwi.logger import log
 from kiwi.path import Path
 from kiwi.defaults import Defaults
 from kiwi.utils.compress import Compress
 from kiwi.oci_tools import OCI
+
+log = logging.getLogger('kiwi')
 
 
 class RootImportOCI(RootImportBase):
@@ -53,7 +55,7 @@ class RootImportOCI(RootImportBase):
             log.warning('Bypassing base image URI to OCI tools')
             image_uri = self.unknown_uri
 
-        oci = OCI()
+        oci = OCI.new()
         oci.import_container_image(image_uri)
         oci.unpack()
         oci.import_rootfs(self.root_dir)

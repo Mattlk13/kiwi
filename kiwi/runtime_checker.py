@@ -16,46 +16,64 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
-import platform
+import re
+import logging
 from textwrap import dedent
+from typing import (
+    NamedTuple, Dict, List, Any
+)
 
 # project
-from .xml_description import XMLDescription
-from .xml_state import XMLState
-from .system.uri import Uri
-from .defaults import Defaults
-from .path import Path
-from .utils.command_capabilities import CommandCapabilities
-from .runtime_config import RuntimeConfig
-from .exceptions import (
+from kiwi.version import __version__
+from io import StringIO
+from kiwi.xml_description import XMLDescription
+from kiwi.firmware import FirmWare
+from kiwi.xml_state import XMLState
+from kiwi.system.uri import Uri
+from kiwi.defaults import Defaults
+from kiwi.command import Command
+from kiwi.path import Path
+from kiwi.utils.command_capabilities import CommandCapabilities
+from kiwi.runtime_config import RuntimeConfig
+from kiwi.exceptions import (
     KiwiRuntimeError
 )
 
+dracut_module_type = NamedTuple(
+    'dracut_module_type', [
+        ('package', str),
+        ('min_version', str)
+    ]
+)
 
-class RuntimeChecker(object):
+log = logging.getLogger('kiwi')
+
+
+class RuntimeChecker:
     """
     **Implements build consistency checks at runtime**
-
-    The schema of an image description covers structure and syntax of
-    the provided data. The RuntimeChecker provides methods to perform
-    further semantic checks which allows to recognize potential build
-    or boot problems early.
-
-    * :param object xml_state: Instance of XMLState
     """
-    def __init__(self, xml_state):
+    def __init__(self, xml_state: XMLState) -> None:
+        """
+        The schema of an image description covers structure and syntax of
+        the provided data. The RuntimeChecker provides methods to perform
+        further semantic checks which allows to recognize potential build
+        or boot problems early.
+
+        :param object xml_state: Instance of XMLState
+        """
         self.xml_state = xml_state
 
-    def check_repositories_configured(self):
+    def check_repositories_configured(self) -> None:
         """
-        Verify that that there are repositories configured
+        Verify that there are repositories configured
         """
         if not self.xml_state.get_repository_sections():
             raise KiwiRuntimeError(
                 'No repositories configured'
             )
 
-    def check_image_include_repos_publicly_resolvable(self):
+    def check_image_include_repos_publicly_resolvable(self) -> None:
         """
         Verify that all repos marked with the imageinclude attribute
         can be resolved into a http based web URL
@@ -83,7 +101,8 @@ class RuntimeChecker(object):
                         message.format(repo_source)
                     )
 
-    def check_target_directory_not_in_shared_cache(self, target_dir):
+    @staticmethod
+    def check_target_directory_not_in_shared_cache(target_dir: str) -> None:
         """
         The target directory must be outside of the kiwi shared cache
         directory in order to avoid busy mounts because kiwi bind mounts
@@ -108,7 +127,7 @@ class RuntimeChecker(object):
                 message % (target_dir, shared_cache_location)
             )
 
-    def check_volume_label_used_with_lvm(self):
+    def check_volume_label_used_with_lvm(self) -> None:
         """
         The optional volume label in a systemdisk setup is only
         effective if the LVM, logical volume manager system is
@@ -136,12 +155,69 @@ class RuntimeChecker(object):
         volume_management = self.xml_state.get_volume_management()
         if volume_management != 'lvm':
             for volume in self.xml_state.get_volumes():
-                if volume.label:
+                if volume.label and volume.label != 'SWAP':
                     raise KiwiRuntimeError(
                         message.format(volume_management)
                     )
 
-    def check_volume_setup_defines_multiple_fullsize_volumes(self):
+    def check_swap_name_used_with_lvm(self) -> None:
+        """
+        The optional oem-swapname is only effective if used together
+        with the LVM volume manager. A name for the swap space can
+        only be set if it is created as a LVM volume. In any other
+        case the name does not apply to the system
+        """
+        message = dedent('''\n
+             Specified swap space name: {0} will not be used
+
+             The specified oem-swapname is used without the LVM volume
+             manager. This means the swap space will be created as simple
+             partition for which no name assignment can take place.
+             The name specified in oem-swapname is used to give the
+             LVM swap volume a name. Outside of LVM the setting is
+             meaningless and should be removed.
+
+             Please delete the following setting from your image
+             description:
+
+             <oem-swapname>{0}</oem-swapname>
+        ''')
+        volume_management = self.xml_state.get_volume_management()
+        if volume_management != 'lvm':
+            oemconfig = self.xml_state.get_build_type_oemconfig_section()
+            if oemconfig and oemconfig.get_oem_swapname():
+                raise KiwiRuntimeError(
+                    message.format(oemconfig.get_oem_swapname()[0])
+                )
+
+    def check_volume_setup_defines_reserved_labels(self) -> None:
+        message = dedent('''\n
+            Reserved label name used in LVM volume setup
+
+            The label setup for volume {0} uses the reserved label {1}.
+            Reserved labels used by KIWI internally are {2}. Please
+            choose another label name for this volume.
+        ''')
+        reserved_labels = [
+            self.xml_state.build_type.get_rootfs_label() or 'ROOT',
+            'SWAP', 'SPARE'
+        ]
+        volume_management = self.xml_state.get_volume_management()
+        if volume_management == 'lvm':
+            for volume in self.xml_state.get_volumes():
+                # A swap volume is created implicitly if oem-swap is
+                # requested. This volume detected via realpath set to
+                # swap is skipped from the reserved label check as it
+                # intentionally uses the reserved label named SWAP
+                if volume.realpath != 'swap':
+                    if volume.label and volume.label in reserved_labels:
+                        raise KiwiRuntimeError(
+                            message.format(
+                                volume.name, volume.label, reserved_labels
+                            )
+                        )
+
+    def check_volume_setup_defines_multiple_fullsize_volumes(self) -> None:
         """
         The volume size specification 'all' makes this volume to
         take the rest space available on the system. It's only
@@ -165,7 +241,7 @@ class RuntimeChecker(object):
             if all_size_volume_count > 1:
                 raise KiwiRuntimeError(message)
 
-    def check_volume_setup_has_no_root_definition(self):
+    def check_volume_setup_has_no_root_definition(self) -> None:
         """
         The root volume in a systemdisk setup is handled in a special
         way. It is not allowed to setup a custom name or mountpoint for
@@ -188,7 +264,7 @@ class RuntimeChecker(object):
             if volume.mountpoint == '/':
                 raise KiwiRuntimeError(message)
 
-    def check_container_tool_chain_installed(self):
+    def check_container_tool_chain_installed(self) -> None:
         """
         When creating container images the specific tools are used in order
         to import and export OCI or Docker compatible images. This check
@@ -241,7 +317,7 @@ class RuntimeChecker(object):
                     )
             self._check_multitag_support()
 
-    def _check_multitag_support(self):
+    def _check_multitag_support(self) -> None:
         message = dedent('''\n
             Using additionaltags attribute requires skopeo tool to be
             capable to handle it, it must include the '--additional-tag'
@@ -256,7 +332,74 @@ class RuntimeChecker(object):
             ):
                 raise KiwiRuntimeError(message)
 
-    def check_boot_description_exists(self):
+    def check_appx_naming_conventions_valid(self) -> None:
+        """
+        When building wsl images there are some naming conventions that
+        must be fulfilled to run the container on Microsoft Windows
+        """
+        launcher_pattern = r'[^\\]+(\.[Ee][Xx][Ee])$'
+        message_container_launcher_invalid = dedent('''\n
+            Invalid WSL launcher name: {0}
+
+            WSL launcher name must match the pattern: {1}
+        ''')
+        id_pattern = r'^[a-zA-Z0-9]+$'
+        message_container_id_invalid = dedent('''\n
+            Invalid WSL container application id: {0}
+
+            WSL container id must match the pattern: {1}
+        ''')
+        build_type = self.xml_state.get_build_type_name()
+        container_config = self.xml_state.get_container_config()
+        container_history = container_config.get('history') or {}
+        if build_type == 'appx' and container_config:
+            launcher = container_history.get('launcher')
+            if launcher and not re.match(launcher_pattern, launcher):
+                raise KiwiRuntimeError(
+                    message_container_launcher_invalid.format(
+                        launcher, launcher_pattern
+                    )
+                )
+            application_id = container_history.get('application_id')
+            if application_id and not re.match(id_pattern, application_id):
+                raise KiwiRuntimeError(
+                    message_container_id_invalid.format(
+                        application_id, id_pattern
+                    )
+                )
+
+    def check_initrd_selection_required(self) -> None:
+        """
+        If the boot attribute is used without selecting kiwi
+        as the initrd_system, the setting of the boot attribute
+        will not have any effect. We assume that configurations
+        which explicitly specify the boot attribute wants to use
+        the custom kiwi initrd system and not dracut.
+        """
+        message_kiwi_initrd_system_not_selected = dedent('''\n
+            Missing initrd_system selection for boot attribute
+
+            The selected boot="'{0}'" boot description indicates
+            the custom kiwi initrd system should be used instead
+            of dracut. If this is correct please explicitly request
+            the kiwi initrd system as follows:
+
+            <type initrd_system="kiwi"/>
+
+            If this is not want you want and dracut should be used
+            as initrd system, please delete the boot attribute
+            as it is obsolete in this case.
+        ''')
+        initrd_system = self.xml_state.get_initrd_system()
+        boot_image_reference = self.xml_state.build_type.get_boot()
+        if initrd_system != 'kiwi' and boot_image_reference:
+            raise KiwiRuntimeError(
+                message_kiwi_initrd_system_not_selected.format(
+                    boot_image_reference
+                )
+            )
+
+    def check_boot_description_exists(self) -> None:
         """
         If a kiwi initrd is used, a lookup to the specified boot
         description is done and fails early if it does not exist
@@ -305,7 +448,7 @@ class RuntimeChecker(object):
                     )
                 )
 
-    def check_consistent_kernel_in_boot_and_system_image(self):
+    def check_consistent_kernel_in_boot_and_system_image(self) -> None:
         """
         If a kiwi initrd is used, the kernel used to build the kiwi
         initrd and the kernel used in the system image must be the
@@ -386,7 +529,118 @@ class RuntimeChecker(object):
                     )
                 )
 
-    def check_dracut_module_for_oem_install_in_package_list(self):
+    def check_syslinux_installed_if_isolinux_is_used(self) -> None:
+        """
+        ISO images that are configured to use isolinux
+        requires the host to provide a set of syslinux
+        binaries.
+        """
+        message = dedent('''\n
+            Required syslinux module(s) not found
+
+            The ISO image build for this image setup uses isolinux
+            and therefore requires the syslinux modules to be
+            available on the build host. Please make sure your
+            build host has the syslinux package installed.
+        ''')
+        firmware = FirmWare(self.xml_state)
+        if Defaults.is_x86_arch(
+            Defaults.get_platform_name()
+        ) and not firmware.efi_mode():
+            image_builds_iso = False
+            build_type = self.xml_state.get_build_type_name()
+            if build_type == 'iso':
+                image_builds_iso = True
+            elif build_type == 'oem':
+                install_iso = self.xml_state.build_type.get_installiso()
+                install_stick = self.xml_state.build_type.get_installstick()
+                if install_iso or install_stick:
+                    image_builds_iso = True
+            if image_builds_iso:
+                syslinux_check_file = Path.which(
+                    'isohdpfx.bin', Defaults.get_syslinux_search_paths()
+                )
+                if not syslinux_check_file:
+                    raise KiwiRuntimeError(message)
+
+    def check_dracut_module_versions_compatible_to_kiwi(
+        self, root_dir: str
+    ) -> None:
+        """
+        KIWI images which makes use of kiwi dracut modules
+        has to use module versions compatible with the version
+        of this KIWI builder code base. This is important to avoid
+        inconsistencies between the way how kiwi includes its own
+        dracut modules and former version of those dracut modules
+        which could be no longer compatible with the builder.
+        Therefore this runtime check maintains a min_version constraint
+        for which we know this KIWI builder to be compatible with.
+        """
+        message = dedent('''\n
+            Incompatible dracut-kiwi module(s) found
+
+            The image was build with KIWI version={0}. The system
+            root tree has the following dracut-kiwi-* module packages
+            installed which are too old to work with this version of KIWI.
+            Please make sure to use dracut-kiwi-* module packages
+            which are >= than the versions listed below.
+
+            {1}
+        ''')
+        kiwi_dracut_modules = {
+            '90kiwi-dump': dracut_module_type(
+                'dracut-kiwi-oem-dump', '9.20.1'
+            ),
+            '90kiwi-live': dracut_module_type(
+                'dracut-kiwi-live', '9.20.1'
+            ),
+            '90kiwi-overlay': dracut_module_type(
+                'dracut-kiwi-overlay', '9.20.1'
+            ),
+            '90kiwi-repart': dracut_module_type(
+                'dracut-kiwi-oem-repart', '9.20.1'
+            ),
+            '99kiwi-dump-reboot': dracut_module_type(
+                'dracut-kiwi-oem-dump', '9.20.1'
+            ),
+            '99kiwi-lib': dracut_module_type(
+                'dracut-kiwi-lib', '9.20.1'
+            )
+        }
+        dracut_module_dir = os.sep.join(
+            [root_dir, '/usr/lib/dracut/modules.d']
+        )
+        if not os.path.isdir(dracut_module_dir):
+            # no dracut module dir present
+            return
+
+        incompatible_modules = {}
+        for module in os.listdir(dracut_module_dir):
+            module_meta = kiwi_dracut_modules.get(module)
+            if module_meta:
+                module_version = self._get_dracut_module_version_from_pdb(
+                    self.xml_state.get_package_manager(),
+                    module_meta.package, root_dir
+                )
+                if module_version:
+                    module_version_nr = tuple(
+                        int(it) for it in module_version.split('.')
+                    )
+                    module_min_version_nr = tuple(
+                        int(it) for it in module_meta.min_version.split('.')
+                    )
+                    if module_version_nr < module_min_version_nr:
+                        incompatible_modules[
+                            module_meta.package
+                        ] = 'got:{0}, need:>={1}'.format(
+                            module_version, module_meta.min_version
+                        )
+        if incompatible_modules:
+            raise KiwiRuntimeError(
+                message.format(__version__, incompatible_modules)
+            )
+
+    def check_dracut_module_for_oem_install_in_package_list(self) -> None:
         """
         OEM images if configured to use dracut as initrd system
         and configured with one of the installiso, installstick
@@ -422,7 +676,7 @@ class RuntimeChecker(object):
                         message.format(required_dracut_package)
                     )
 
-    def check_architecture_supports_iso_firmware_setup(self):
+    def check_architecture_supports_iso_firmware_setup(self) -> None:
         """
         For creating ISO images a different bootloader setup is
         performed depending on the configured firmware. If the
@@ -442,7 +696,7 @@ class RuntimeChecker(object):
 
             <type ... firmware="efi"/>
         ''')
-        arch = platform.machine()
+        arch = Defaults.get_platform_name()
         build_type = self.xml_state.get_build_type_name()
         firmware = self.xml_state.build_type.get_firmware() or \
             Defaults.get_default_firmware(arch)
@@ -460,7 +714,7 @@ class RuntimeChecker(object):
                     message.format(firmware, arch)
                 )
 
-    def check_dracut_module_for_disk_oem_in_package_list(self):
+    def check_dracut_module_for_disk_oem_in_package_list(self) -> None:
         """
         OEM images if configured to use dracut as initrd system
         requires the KIWI provided dracut-kiwi-oem-repart module
@@ -480,8 +734,10 @@ class RuntimeChecker(object):
         ''')
         required_dracut_package = 'dracut-kiwi-oem-repart'
         initrd_system = self.xml_state.get_initrd_system()
+        disk_resize_requested = self.xml_state.get_oemconfig_oem_resize()
         build_type = self.xml_state.get_build_type_name()
-        if build_type == 'oem' and initrd_system == 'dracut':
+        if build_type == 'oem' and initrd_system == 'dracut' and \
+           disk_resize_requested:
             package_names = \
                 self.xml_state.get_bootstrap_packages() + \
                 self.xml_state.get_system_packages()
@@ -490,7 +746,7 @@ class RuntimeChecker(object):
                     message.format(required_dracut_package)
                 )
 
-    def check_dracut_module_for_live_iso_in_package_list(self):
+    def check_dracut_module_for_live_iso_in_package_list(self) -> None:
         """
         Live ISO images uses a dracut initrd to boot and requires
         the KIWI provided kiwi-live dracut module to be installed
@@ -520,7 +776,7 @@ class RuntimeChecker(object):
                     message.format(required_dracut_package)
                 )
 
-    def check_dracut_module_for_disk_overlay_in_package_list(self):
+    def check_dracut_module_for_disk_overlay_in_package_list(self) -> None:
         """
         Disk images configured to use a root filesystem overlay
         requires the KIWI provided kiwi-overlay dracut module to
@@ -548,7 +804,7 @@ class RuntimeChecker(object):
                     message.format(required_dracut_package)
                 )
 
-    def check_efi_mode_for_disk_overlay_correctly_setup(self):
+    def check_efi_mode_for_disk_overlay_correctly_setup(self) -> None:
         """
         Disk images configured to use a root filesystem overlay
         only supports the standard EFI mode and not secure boot.
@@ -577,7 +833,7 @@ class RuntimeChecker(object):
         if overlayroot and firmware == 'uefi':
             raise KiwiRuntimeError(message)
 
-    def check_xen_uniquely_setup_as_server_or_guest(self):
+    def check_xen_uniquely_setup_as_server_or_guest(self) -> None:
         """
         If the image is classified to be used as Xen image, it can
         be either a Xen Server(dom0) or a Xen guest. The image
@@ -615,7 +871,7 @@ class RuntimeChecker(object):
             else:
                 raise KiwiRuntimeError(xen_message)
 
-    def check_mediacheck_installed(self):
+    def check_mediacheck_installed(self) -> None:
         """
         If the image description enables the mediacheck attribute
         the required tools to run this check must be installed
@@ -634,22 +890,11 @@ class RuntimeChecker(object):
                     message_tool_not_found.format(name=tool)
                 )
 
-    def check_minimal_required_preferences(self):
+    def check_image_version_provided(self) -> None:
         """
-        Kiwi requires some of the elements of the `preferences` element
-        to be present at least in one of the preferences section. This
-        runtime check validates <version> and <packagemanager> are
-        provided.
+        Kiwi requires a <version> element to be specified as part
+        of at least one <preferences> section.
         """
-        message_missing_package_manager = dedent('''\n
-            No package manager is defined in any of the <preferences>
-            sections. Please add
-
-                <packagemanager>desired_package_manager<packagemanager/>
-
-            inside the <preferences> section.
-        ''')
-
         message_missing_version = dedent('''\n
             No version is defined in any of the <preferences>
             sections. Please add
@@ -659,8 +904,73 @@ class RuntimeChecker(object):
             inside the <preferences> section.
         ''')
 
-        if not self.xml_state.get_package_manager():
-            raise KiwiRuntimeError(message_missing_package_manager)
-
         if not self.xml_state.get_image_version():
             raise KiwiRuntimeError(message_missing_version)
+
+    def check_image_type_unique(self) -> None:
+        """
+        Verify that the selected image type is unique within
+        the range of the configured types and profiles.
+        """
+        message = dedent('''\n
+            Conflicting image type setup detected
+
+            The selected image type '{0}' in the {1} profile
+            selection is not unique. There are the followng type
+            settings which overrides each other:
+            {2}
+            To solve this conflict please move the image type
+            setup into its own profile and select them using
+            the --profile option at call time.
+        ''')
+        image_type_sections = []
+        type_dict: Dict[str, List[Any]] = {}
+        for preferences in self.xml_state.get_preferences_sections():
+            image_type_sections += preferences.get_type()
+
+        for image_type in image_type_sections:
+            type_name = image_type.get_image()
+            if type_dict.get(type_name):
+                type_dict[type_name].append(image_type)
+            else:
+                type_dict[type_name] = [image_type]
+
+        for type_name, type_list in list(type_dict.items()):
+            if len(type_list) > 1:
+                type_export = StringIO()
+                for image_type in type_list:
+                    type_export.write(os.linesep)
+                    image_type.export(type_export, 0)
+                raise KiwiRuntimeError(
+                    message.format(
+                        type_name, self.xml_state.profiles or ['Default'],
+                        type_export.getvalue()
+                    )
+                )
+
+    @staticmethod
+    def _get_dracut_module_version_from_pdb(
+        package_manager: str, package_name: str, root_dir: str
+    ) -> str:
+        tool = Defaults.get_default_packager_tool(package_manager)
+        package_query = None
+        package_manager_query = None
+        package_version = ''
+        if tool == 'rpm':
+            package_manager_query = [
+                'chroot', root_dir, tool, '-q', '--qf',
+                '%{VERSION}', package_name
+            ]
+        elif tool == 'dpkg':
+            package_manager_query = [
+                'chroot', root_dir, 'dpkg-query', '-W', '-f',
+                '${Version}', package_name
+            ]
+        if package_manager_query:
+            try:
+                package_query = Command.run(package_manager_query)
+                if package_query:
+                    package_version = package_query.output.split('-', 1)[0]
+            except Exception as issue:
+                log.debug(f'Package manager query failed with: {issue}')
+        return package_version

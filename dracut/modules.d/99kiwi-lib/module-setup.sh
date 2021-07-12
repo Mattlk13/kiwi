@@ -15,15 +15,16 @@ depends() {
 install() {
     declare moddir=${moddir}
     inst_multiple \
-        blkid blockdev parted dd mkdir rmdir \
-        grep cut tail head tr bc \
-        basename partprobe sgdisk mkswap readlink lsblk \
+        blkid blockdev dd mkdir rmdir \
+        grep cut tail head tr bc true false mountpoint \
+        basename partprobe sfdisk sgdisk mkswap readlink lsblk \
         btrfs xfs_growfs resize2fs \
         e2fsck btrfsck xfs_repair \
         vgs vgchange lvextend lvcreate lvresize pvresize \
         mdadm cryptsetup dialog \
         pv curl xz \
         dmsetup
+    inst_multiple -o dolly
     if [[ "$(uname -m)" =~ s390 ]];then
         inst_multiple fdasd
     fi

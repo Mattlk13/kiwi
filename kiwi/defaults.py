@@ -15,28 +15,56 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import logging
 import os
 import glob
 from collections import namedtuple
 import platform
+import yaml
 from pkg_resources import resource_filename
+from typing import (
+    List, NamedTuple, Optional
+)
 
 # project
-from .path import Path
-from .version import (
+from kiwi.path import Path
+from kiwi.version import (
     __githash__,
     __version__
 )
 
-from .exceptions import KiwiBootLoaderGrubDataError
+from kiwi.exceptions import KiwiBootLoaderGrubDataError
+
+# Default module variables
+POST_DISK_SYNC_SCRIPT = 'disk.sh'
+POST_BOOTSTRAP_SCRIPT = 'post_bootstrap.sh'
+POST_PREPARE_SCRIPT = 'config.sh'
+PRE_CREATE_SCRIPT = 'images.sh'
+EDIT_BOOT_CONFIG_SCRIPT = 'edit_boot_config.sh'
+EDIT_BOOT_INSTALL_SCRIPT = 'edit_boot_install.sh'
+IMAGE_METADATA_DIR = 'image'
+ROOT_VOLUME_NAME = 'LVRoot'
+SHARED_CACHE_DIR = '/var/cache/kiwi'
+CUSTOM_RUNTIME_CONFIG_FILE = None
+PLATFORM_MACHINE = platform.machine()
+
+log = logging.getLogger('kiwi')
+
+grub_loader_type = NamedTuple(
+    'grub_loader_type', [
+        ('filename', str),
+        ('binaryname', str)
+    ]
+)
 
 
-class Defaults(object):
+class Defaults:
     """
     **Implements default values**
 
     Provides static methods for default values and state information
     """
+
     def __init__(self):
         self.defaults = {
             # alignment in bytes
@@ -69,6 +97,13 @@ class Defaults(object):
         return 256
 
     @staticmethod
+    def get_swapsize_mbytes():
+        """
+        Provides swapsize in MB
+        """
+        return 128
+
+    @staticmethod
     def get_xz_compression_options():
         """
         Provides compression options for the xz compressor
@@ -87,6 +122,34 @@ class Defaults(object):
         ]
 
     @staticmethod
+    def get_platform_name():
+        """
+        Provides the machine architecture name as used by KIWI
+
+        This is the architecture name as it is returned by 'uname -m'
+        with one exception for the 32bit x86 architecture which is
+        handled as 'ix86' in general
+
+        :return: architecture name
+
+        :rtype: str
+        """
+        arch = PLATFORM_MACHINE
+        if arch == 'i686' or arch == 'i586':
+            arch = 'ix86'
+        return arch
+
+    @staticmethod
+    def set_platform_name(name: str):
+        """
+        Sets the platform architecture once
+
+        :param str name: an architecture name
+        """
+        global PLATFORM_MACHINE
+        PLATFORM_MACHINE = name
+
+    @staticmethod
     def is_x86_arch(arch):
         """
         Checks if machine architecture is x86 based
@@ -97,7 +160,10 @@ class Defaults(object):
 
         :rtype: bool
         """
-        if arch == 'x86_64' or arch == 'i686' or arch == 'i586':
+        x86_arch_names = [
+            'x86_64', 'i686', 'i586', 'ix86'
+        ]
+        if arch in x86_arch_names:
             return True
         return False
 
@@ -142,26 +208,16 @@ class Defaults(object):
         return 'http://download.opensuse.org/repositories'
 
     @staticmethod
-    def get_s390_disk_block_size():
+    def get_obs_api_server_url():
         """
-        Provides the default block size for s390 storage disks
+        Provides the default API server url to access the
+        public open buildservice API
 
-        :return: blocksize value
-
-        :rtype: int
-        """
-        return '4096'
-
-    @staticmethod
-    def get_s390_disk_type():
-        """
-        Provides the default disk type for s390 storage disks
-
-        :return: type name
+        :return: url path
 
         :rtype: str
         """
-        return 'CDL'
+        return 'https://api.opensuse.org'
 
     @staticmethod
     def get_solvable_location():
@@ -175,6 +231,26 @@ class Defaults(object):
         :rtype: str
         """
         return '/var/tmp/kiwi/satsolver'
+
+    @staticmethod
+    def set_shared_cache_location(location):
+        """
+        Sets the shared cache location once
+
+        :param str location: a location path
+        """
+        global SHARED_CACHE_DIR
+        SHARED_CACHE_DIR = location
+
+    @staticmethod
+    def set_custom_runtime_config_file(filename):
+        """
+        Sets the runtime config file once
+
+        :param str filename: a file path name
+        """
+        global CUSTOM_RUNTIME_CONFIG_FILE
+        CUSTOM_RUNTIME_CONFIG_FILE = filename
 
     @staticmethod
     def get_shared_cache_location():
@@ -191,10 +267,20 @@ class Defaults(object):
 
         :rtype: str
         """
-        from .cli import Cli
         return os.path.abspath(os.path.normpath(
-            Cli().get_global_args().get('--shared-cache-dir')
+            SHARED_CACHE_DIR
         )).lstrip(os.sep)
+
+    @staticmethod
+    def get_sync_options():
+        """
+        Provides list of default data sync options
+
+        :return: list of rsync options
+
+        :rtype: list
+        """
+        return ['-a', '-H', '-X', '-A', '--one-file-system', '--inplace']
 
     @staticmethod
     def get_exclude_list_for_root_data_sync():
@@ -208,9 +294,57 @@ class Defaults(object):
         :rtype: list
         """
         exclude_list = [
-            'image', '.profile', '.kconfig',
+            'image', '.profile', '.kconfig', 'run/*', 'tmp/*',
             Defaults.get_buildservice_env_name(),
             Defaults.get_shared_cache_location()
+        ]
+        return exclude_list
+
+    @staticmethod
+    def get_exclude_list_from_custom_exclude_files(root_dir: str) -> List:
+        """
+        Provides the list of folders that are excluded by the
+        optional metadata file image/exclude_files.yaml
+
+        :return: list of file and directory names
+
+        :param string root_dir: image root directory
+
+        :rtype: list
+        """
+        exclude_file = os.sep.join(
+            [root_dir, 'image', 'exclude_files.yaml']
+        )
+        exclude_list = []
+        if os.path.isfile(exclude_file):
+            with open(exclude_file) as exclude:
+                exclude_dict = yaml.safe_load(exclude)
+                exclude_data = exclude_dict.get('exclude')
+                if exclude_data and isinstance(exclude_data, list):
+                    for exclude_file in exclude_data:
+                        exclude_list.append(
+                            exclude_file.lstrip(os.sep)
+                        )
+                else:
+                    log.warning(
+                        f'invalid yaml structure in {exclude_file}, ignored'
+                    )
+        return exclude_list
+
+    @staticmethod
+    def get_exclude_list_for_non_physical_devices():
+        """
+        Provides the list of folders that are not associated
+        with a physical device. KIWI returns the basename of
+        the folders typically used as mountpoint for those
+        devices.
+
+        :return: list of file and directory names
+
+        :rtype: list
+        """
+        exclude_list = [
+            'proc', 'sys', 'dev'
         ]
         return exclude_list
 
@@ -276,6 +410,7 @@ class Defaults(object):
             '0x319': video_type(grub2='1280x1024', isolinux='1280 1024'),
             '0x31a': video_type(grub2='1280x1024', isolinux='1280 1024'),
             '0x31b': video_type(grub2='1280x1024', isolinux='1280 1024'),
+            'auto': video_type(grub2='auto', isolinux='800 600')
         }
 
     @staticmethod
@@ -314,13 +449,26 @@ class Defaults(object):
     @staticmethod
     def get_default_video_mode():
         """
-        Provides 800x600 default video mode as hex value for the kernel
+        Uses auto mode for default video. See get_video_mode_map
+        for details on the value depending which bootloader is
+        used
 
-        :return: vesa video kernel hex value
+        :return: auto
 
         :rtype: str
         """
-        return '0x303'
+        return 'auto'
+
+    @staticmethod
+    def get_default_bootloader():
+        """
+        Return default bootloader name which is grub2
+
+        :return: bootloader name
+
+        :rtype: str
+        """
+        return 'grub2'
 
     @staticmethod
     def get_grub_boot_directory_name(lookup_path):
@@ -336,10 +484,7 @@ class Defaults(object):
 
         :rtype: str
         """
-        chroot_env = {
-            'PATH': os.sep.join([lookup_path, 'usr', 'sbin'])
-        }
-        if Path.which(filename='grub2-install', custom_env=chroot_env):
+        if Path.which(filename='grub2-install', root_dir=lookup_path):
             # the presence of grub2-install is an indicator to put all
             # grub2 data below boot/grub2
             return 'grub2'
@@ -390,7 +535,8 @@ class Defaults(object):
             'crypto',
             'cryptodisk',
             'test',
-            'true'
+            'true',
+            'loadenv'
         ]
         if multiboot:
             modules.append('multiboot')
@@ -407,7 +553,7 @@ class Defaults(object):
 
         :rtype: list
         """
-        host_architecture = platform.machine()
+        host_architecture = Defaults.get_platform_name()
         modules = Defaults.get_grub_basic_modules(multiboot) + [
             'part_gpt',
             'part_msdos',
@@ -415,8 +561,7 @@ class Defaults(object):
         ]
         if host_architecture == 'x86_64':
             modules += [
-                'efi_uga',
-                'linuxefi'
+                'efi_uga'
             ]
         return modules
 
@@ -459,6 +604,22 @@ class Defaults(object):
         return modules
 
     @staticmethod
+    def get_grub_s390_modules():
+        """
+        Provides list of grub ofw modules (s390)
+
+        :return: list of module names
+
+        :rtype: list
+        """
+        modules = Defaults.get_grub_basic_modules(multiboot=False) + [
+            'part_gpt',
+            'part_msdos',
+            'boot'
+        ]
+        return modules
+
+    @staticmethod
     def get_grub_path(root_path, filename, raise_on_error=True):
         """
         Provides grub path to given search file
@@ -482,16 +643,19 @@ class Defaults(object):
 
         :rtype: str
         """
+        log.debug(f'Searching grub file: {filename}')
         install_dirs = [
             'usr/share', 'usr/lib'
         ]
         lookup_list = []
         for grub_name in ['grub2', 'grub']:
             for install_dir in install_dirs:
-                grub_path = os.sep.join(
-                    [root_path, install_dir, grub_name, filename]
+                grub_path = os.path.join(
+                    root_path, install_dir, grub_name, filename
                 )
+                log.debug(f'--> {grub_path}')
                 if os.path.exists(grub_path):
+                    log.debug(f'--> Found in: {grub_path}')
                     return grub_path
                 lookup_list.append(grub_path)
         if raise_on_error:
@@ -538,11 +702,30 @@ class Defaults(object):
         shim_file_patterns = [
             '/usr/share/efi/*/shim.efi',
             '/usr/lib64/efi/shim.efi',
-            '/boot/efi/EFI/*/shim.efi'
+            '/boot/efi/EFI/*/shim*.efi',
+            '/usr/lib/shim/shim*.efi'
         ]
         for shim_file_pattern in shim_file_patterns:
             for shim_file in glob.iglob(root_path + shim_file_pattern):
                 return shim_file
+
+    @staticmethod
+    def get_grub_efi_font_directory(root_path):
+        """
+        Provides distribution specific EFI font directory used with grub.
+
+        :param string root_path: image root path
+
+        :return: file path or None
+
+        :rtype: str
+        """
+        font_dir_patterns = [
+            '/boot/efi/EFI/*/fonts'
+        ]
+        for font_dir_pattern in font_dir_patterns:
+            for font_dir in glob.iglob(root_path + font_dir_pattern):
+                return font_dir
 
     @staticmethod
     def get_unsigned_grub_loader(root_path):
@@ -560,7 +743,8 @@ class Defaults(object):
         """
         unsigned_grub_file_patterns = [
             '/usr/share/grub*/*-efi/grub.efi',
-            '/usr/lib/grub*/*-efi/grub.efi'
+            '/usr/lib/grub*/*-efi/grub.efi',
+            '/boot/efi/EFI/*/grubx64.efi'
         ]
         for unsigned_grub_file_pattern in unsigned_grub_file_patterns:
             for unsigned_grub_file in glob.iglob(
@@ -631,6 +815,7 @@ class Defaults(object):
         """
         return [
             '/usr/share/syslinux',
+            '/usr/lib/syslinux/bios',
             '/usr/lib/syslinux/modules/bios',
             '/usr/lib/ISOLINUX'
         ]
@@ -648,28 +833,84 @@ class Defaults(object):
         return 'eltorito.img'
 
     @staticmethod
-    def get_signed_grub_loader(root_path):
+    def get_signed_grub_loader(root_path: str) -> Optional[grub_loader_type]:
         """
         Provides shim signed grub loader file path
 
         Searches distribution specific locations to find grub.efi
         below the given root path
 
-        :param string root_path: image root path
+        :param str root_path: image root path
 
-        :return: file path or None
+        :return: grub_loader_type | None
+
+        :rtype: NamedTuple
+        """
+        grub_pattern_type = namedtuple(
+            'grub_pattern_type', ['pattern', 'binaryname']
+        )
+        signed_grub_file_patterns = [
+            grub_pattern_type(
+                '/usr/share/efi/*/grub.efi', None
+            ),
+            grub_pattern_type(
+                '/usr/lib64/efi/grub.efi', None
+            ),
+            grub_pattern_type(
+                '/boot/efi/EFI/*/grub*.efi', None
+            ),
+            grub_pattern_type(
+                '/usr/share/grub*/*-efi/grub.efi', None
+            ),
+            grub_pattern_type(
+                '/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed',
+                'grubx64.efi'
+            )
+        ]
+        for signed_grub in signed_grub_file_patterns:
+            for signed_grub_file in glob.iglob(root_path + signed_grub.pattern):
+                if not signed_grub.binaryname:
+                    binaryname = os.path.basename(signed_grub_file)
+                else:
+                    binaryname = signed_grub.binaryname
+                return grub_loader_type(
+                    signed_grub_file, binaryname
+                )
+        return None
+
+    @staticmethod
+    def get_efi_vendor_directory(efi_path):
+        """
+        Provides EFI vendor directory if present
+
+        Looks up distribution specific EFI vendor directory
+
+        :param string root_path: path to efi mountpoint
+
+        :return: directory path or None
 
         :rtype: str
         """
-        signed_grub_file_patterns = [
-            '/usr/share/efi/*/grub.efi',
-            '/usr/lib64/efi/grub.efi',
-            '/boot/efi/EFI/*/grub*.efi',
-            '/usr/share/grub*/*-efi/grub.efi'
+        efi_vendor_directories = [
+            'EFI/fedora',
+            'EFI/redhat',
+            'EFI/centos',
+            'EFI/opensuse',
+            'EFI/ubuntu',
+            'EFI/debian'
         ]
-        for signed_grub_pattern in signed_grub_file_patterns:
-            for signed_grub in glob.iglob(root_path + signed_grub_pattern):
-                return signed_grub
+        for efi_vendor_directory in efi_vendor_directories:
+            efi_vendor_directory = os.sep.join([efi_path, efi_vendor_directory])
+            if os.path.exists(efi_vendor_directory):
+                return efi_vendor_directory
+
+    @staticmethod
+    def get_vendor_grubenv(efi_path):
+        efi_vendor_directory = Defaults.get_efi_vendor_directory(efi_path)
+        if efi_vendor_directory:
+            grubenv = os.sep.join([efi_vendor_directory, 'grubenv'])
+            if os.path.exists(grubenv):
+                return grubenv
 
     @staticmethod
     def get_shim_vendor_directory(root_path):
@@ -687,8 +928,8 @@ class Defaults(object):
         :rtype: str
         """
         shim_vendor_patterns = [
-            '/boot/efi/EFI/*/shim.efi',
-            '/EFI/*/shim.efi'
+            '/boot/efi/EFI/*/shim*.efi',
+            '/EFI/*/shim*.efi'
         ]
         for shim_vendor_pattern in shim_vendor_patterns:
             for shim_file in glob.iglob(root_path + shim_vendor_pattern):
@@ -833,6 +1074,7 @@ class Defaults(object):
             'x86_64': ['efi', 'uefi', 'bios', 'ec2hvm', 'ec2'],
             'i586': ['bios'],
             'i686': ['bios'],
+            'ix86': ['bios'],
             'aarch64': ['efi', 'uefi'],
             'arm64': ['efi', 'uefi'],
             'armv5el': ['efi', 'uefi'],
@@ -844,6 +1086,7 @@ class Defaults(object):
             'ppc': ['ofw'],
             'ppc64': ['ofw', 'opal'],
             'ppc64le': ['ofw', 'opal'],
+            'riscv64': ['efi', 'uefi'],
             's390': [],
             's390x': []
         }
@@ -853,7 +1096,7 @@ class Defaults(object):
         """
         Provides default firmware for specified architecture
 
-        :param string arch: platform.machine
+        :param string arch: machine architecture name
 
         :return: firmware name
 
@@ -863,6 +1106,7 @@ class Defaults(object):
             'x86_64': 'bios',
             'i586': 'bios',
             'i686': 'bios',
+            'ix86': 'bios',
             'ppc': 'ofw',
             'ppc64': 'ofw',
             'ppc64le': 'ofw',
@@ -872,7 +1116,8 @@ class Defaults(object):
             'armv6hl': 'efi',
             'armv6l': 'efi',
             'armv7hl': 'efi',
-            'armv7l': 'efi'
+            'armv7l': 'efi',
+            'riscv64': 'efi'
         }
         if arch in default_firmware:
             return default_firmware[arch]
@@ -909,7 +1154,7 @@ class Defaults(object):
         Provides architecture specific EFI directory name which
         stores the EFI binaries for the desired architecture.
 
-        :param string arch: platform.machine
+        :param string arch: machine architecture name
 
         :return: directory name
 
@@ -928,7 +1173,8 @@ class Defaults(object):
             'armv5el': 'arm-efi',
             'armv5tel': 'arm-efi',
             'armv6l': 'arm-efi',
-            'armv7l': 'arm-efi'
+            'armv7l': 'arm-efi',
+            'riscv64': 'riscv64-efi'
         }
         if arch in default_module_directory_names:
             return default_module_directory_names[arch]
@@ -949,7 +1195,7 @@ class Defaults(object):
         """
         Provides architecture specific EFI boot binary name
 
-        :param string arch: platform.machine
+        :param string arch: machine architecture name
 
         :return: name
 
@@ -962,7 +1208,8 @@ class Defaults(object):
             'armv5el': 'bootarm.efi',
             'armv5tel': 'bootarm.efi',
             'armv6l': 'bootarm.efi',
-            'armv7l': 'bootarm.efi'
+            'armv7l': 'bootarm.efi',
+            'riscv64': 'bootriscv64.efi'
         }
         if arch in default_efi_image_names:
             return default_efi_image_names[arch]
@@ -1044,7 +1291,7 @@ class Defaults(object):
 
         :rtype: list
         """
-        return ['docker', 'oci']
+        return ['docker', 'oci', 'appx']
 
     @staticmethod
     def get_filesystem_image_types():
@@ -1097,25 +1344,25 @@ class Defaults(object):
         return '/etc/dracut.conf.d/02-kiwi.conf'
 
     @staticmethod
-    def get_live_dracut_module_from_flag(flag_name):
+    def get_live_dracut_modules_from_flag(flag_name):
         """
-        Provides flag_name to dracut module name map
+        Provides flag_name to dracut modules name map
 
         Depending on the value of the flag attribute in the KIWI image
-        description a specific dracut module needs to be selected
+        description specific dracut modules need to be selected
 
-        :return: dracut module name
+        :return: dracut module names as list
 
-        :rtype: str
+        :rtype: list
         """
         live_modules = {
-            'overlay': 'kiwi-live',
-            'dmsquash': 'dmsquash-live livenet'
+            'overlay': ['kiwi-live'],
+            'dmsquash': ['dmsquash-live', 'livenet']
         }
         if flag_name in live_modules:
             return live_modules[flag_name]
         else:
-            return 'kiwi-live'
+            return ['kiwi-live']
 
     @staticmethod
     def get_default_live_iso_root_filesystem():
@@ -1156,7 +1403,7 @@ class Defaults(object):
 
         :rtype: list
         """
-        return ['oem', 'vmx']
+        return ['oem']
 
     @staticmethod
     def get_live_image_types():
@@ -1170,15 +1417,15 @@ class Defaults(object):
         return ['iso']
 
     @staticmethod
-    def get_network_image_types():
+    def get_kis_image_types():
         """
-        Provides supported pxe image types
+        Provides supported kis image types
 
-        :return: pxe image type names
+        :return: kis image type names
 
         :rtype: list
         """
-        return ['pxe']
+        return ['kis', 'pxe']
 
     @staticmethod
     def get_boot_image_description_path():
@@ -1283,10 +1530,9 @@ class Defaults(object):
 
         :rtype: str
         """
-        arch = platform.machine()
-        if arch == 'i686' or arch == 'i586':
-            arch = 'ix86'
-        return os.sep.join(['boot', arch])
+        return os.sep.join(
+            ['boot', Defaults.get_platform_name()]
+        )
 
     @staticmethod
     def get_iso_tool_category():
@@ -1413,6 +1659,18 @@ class Defaults(object):
         return 'macros.kiwi-image-config'
 
     @staticmethod
+    def get_default_package_manager() -> str:
+        """
+        Returns the default package manager name if none
+        is configured in the image description
+
+        :return: package manager name
+
+        :rtype: str
+        """
+        return 'dnf'
+
+    @staticmethod
     def get_default_packager_tool(package_manager):
         """
         Provides the packager tool according to the package manager
@@ -1423,12 +1681,14 @@ class Defaults(object):
 
         :rtype: str
         """
-        rpm_based = ['zypper', 'yum', 'dnf']
-        deb_based = ['apt-get']
+        rpm_based = ['zypper', 'dnf', 'microdnf']
+        deb_based = ['apt']
         if package_manager in rpm_based:
             return 'rpm'
         elif package_manager in deb_based:
             return 'dpkg'
+        elif package_manager == 'pacman':
+            return 'pacman'
 
     def get(self, key):
         """
@@ -1442,6 +1702,13 @@ class Defaults(object):
         """
         if key in self.defaults:
             return self.defaults[key]
+
+    @staticmethod
+    def get_profile_file(root_dir):
+        """
+        Return name of profile file for given root directory
+        """
+        return root_dir + '/.profile'
 
     def to_profile(self, profile):
         """

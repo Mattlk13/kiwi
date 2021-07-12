@@ -15,8 +15,9 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
-import platform
+import logging
 import os
+from typing import Dict
 
 # project
 from kiwi.filesystem import FileSystem
@@ -25,40 +26,37 @@ from kiwi.storage.loop_device import LoopDevice
 from kiwi.storage.device_provider import DeviceProvider
 from kiwi.system.setup import SystemSetup
 from kiwi.defaults import Defaults
-from kiwi.logger import log
 from kiwi.system.result import Result
 from kiwi.runtime_config import RuntimeConfig
+from kiwi.xml_state import XMLState
 
 from kiwi.exceptions import (
     KiwiFileSystemSetupError
 )
 
+log = logging.getLogger('kiwi')
 
-class FileSystemBuilder(object):
+
+class FileSystemBuilder:
     """
     **Filesystem image builder**
 
-    :param str label: filesystem label
-    :param str root_dir: root directory path name
+    :param obsject xml_state: Instance of :class:`XMLState`
     :param str target_dir: target directory path name
-    :param str requested_image_type: configured image type
-    :param str requested_filesystem: requested filesystem name
-    :param obejct system_setup: instance of :class:`SystemSetup`
-    :param str filename: file name of the filesystem image
-    :param int blocksize: configured disk blocksize
-    :param object filesystem_setup: instance of :class:`FileSystemSetup`
-    :param object filesystems_no_device_node: List of filesystems which are
-        created from a data tree and do not require a block device e.g loop
-    :param dict filesystem_custom_parameters: Configured custom filesystem
-        mount and creation arguments
-    :param object result: instance of :class:`Result`
+    :param str root_dir: root directory path name
+    :param dict custom_args: Custom processing arguments defined as hash keys:
+        * None
     """
-    def __init__(self, xml_state, target_dir, root_dir):
+    def __init__(
+        self, xml_state: XMLState, target_dir: str,
+        root_dir: str, custom_args: Dict = None
+    ):
         self.label = None
+        self.root_uuid = ''
         self.root_dir = root_dir
         self.target_dir = target_dir
         self.requested_image_type = xml_state.get_build_type_name()
-        if self.requested_image_type == 'pxe':
+        if self.requested_image_type in Defaults.get_kis_image_types():
             self.requested_filesystem = xml_state.build_type.get_filesystem()
         else:
             self.requested_filesystem = self.requested_image_type
@@ -71,6 +69,10 @@ class FileSystemBuilder(object):
             'mount_options': xml_state.get_fs_mount_option_list(),
             'create_options': xml_state.get_fs_create_option_list()
         }
+        if self.requested_filesystem == 'squashfs':
+            self.filesystem_custom_parameters['compression'] = \
+                xml_state.build_type.get_squashfscompression()
+
         self.system_setup = SystemSetup(
             xml_state=xml_state, root_dir=self.root_dir
         )
@@ -78,7 +80,7 @@ class FileSystemBuilder(object):
             [
                 target_dir, '/',
                 xml_state.xml_data.get_name(),
-                '.' + platform.machine(),
+                '.' + Defaults.get_platform_name(),
                 '-' + xml_state.get_image_version(),
                 '.', self.requested_filesystem
             ]
@@ -91,7 +93,7 @@ class FileSystemBuilder(object):
         self.result = Result(xml_state)
         self.runtime_config = RuntimeConfig()
 
-    def create(self):
+    def create(self) -> Result:
         """
         Build a mountable filesystem image
 
@@ -119,7 +121,7 @@ class FileSystemBuilder(object):
             self._operate_on_loop()
         else:
             self._operate_on_file()
-        self.result.verify_image_size(
+        Result.verify_image_size(
             self.runtime_config.get_max_size_constraint(),
             self.filename
         )
@@ -142,6 +144,15 @@ class FileSystemBuilder(object):
             shasum=False
         )
         self.result.add(
+            key='image_changes',
+            filename=self.system_setup.export_package_changes(
+                self.target_dir
+            ),
+            use_for_bundle=True,
+            compress=True,
+            shasum=False
+        )
+        self.result.add(
             key='image_verified',
             filename=self.system_setup.export_package_verification(
                 self.target_dir
@@ -152,7 +163,7 @@ class FileSystemBuilder(object):
         )
         return self.result
 
-    def _operate_on_loop(self):
+    def _operate_on_loop(self) -> None:
         filesystem = None
         loop_provider = LoopDevice(
             self.filename,
@@ -160,21 +171,24 @@ class FileSystemBuilder(object):
             self.blocksize
         )
         loop_provider.create()
-        filesystem = FileSystem(
+        filesystem = FileSystem.new(
             self.requested_filesystem, loop_provider,
             self.root_dir + os.sep, self.filesystem_custom_parameters
         )
         filesystem.create_on_device(self.label)
+        self.root_uuid = loop_provider.get_uuid(loop_provider.get_device())
         log.info(
-            '--> Syncing data to filesystem on %s', loop_provider.get_device()
+            f'--> Syncing data to filesystem on {loop_provider.get_device()}'
         )
         filesystem.sync_data(
-            Defaults.get_exclude_list_for_root_data_sync()
+            Defaults.
+            get_exclude_list_for_root_data_sync() + Defaults.
+            get_exclude_list_from_custom_exclude_files(self.root_dir)
         )
 
-    def _operate_on_file(self):
+    def _operate_on_file(self) -> None:
         default_provider = DeviceProvider()
-        filesystem = FileSystem(
+        filesystem = FileSystem.new(
             self.requested_filesystem, default_provider,
             self.root_dir, self.filesystem_custom_parameters
         )

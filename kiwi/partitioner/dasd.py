@@ -16,11 +16,13 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 from tempfile import NamedTemporaryFile
+import logging
 
 # project
 from kiwi.command import Command
-from kiwi.logger import log
 from kiwi.partitioner.base import PartitionerBase
+
+log = logging.getLogger('kiwi')
 
 
 class PartitionerDasd(PartitionerBase):
@@ -36,6 +38,7 @@ class PartitionerDasd(PartitionerBase):
         self.flag_map = {
             'f.active': None,
             't.linux': '1',
+            't.swap': '1',
             't.lvm': '1',
             't.raid': '1',
             't.efi': None,
@@ -61,7 +64,7 @@ class PartitionerDasd(PartitionerBase):
             if mbsize == 'all_free':
                 partition.write('n\np\n\n\nw\nq\n')
             else:
-                partition.write('n\np\n\n+%dM\nw\nq\n' % mbsize)
+                partition.write(f'n\np\n\n+{mbsize}M\nw\nq\n')
         bash_command = ' '.join(
             ['cat', fdasd_input.name, '|', 'fdasd', '-f', self.disk_device]
         )

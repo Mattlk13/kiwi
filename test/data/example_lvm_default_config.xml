@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<image schemaversion="7.1" name="LimeJeOS-openSUSE-13.2">
+<image schemaversion="7.4" name="LimeJeOS-openSUSE-13.2">
     <description type="system">
         <author>Marcus Schäfer</author>
         <contact>ms@suse.com</contact>
@@ -18,11 +18,11 @@
         <rpm-check-signatures>false</rpm-check-signatures>
         <bootsplash-theme>openSUSE</bootsplash-theme>
         <bootloader-theme>openSUSE</bootloader-theme>
-        <type image="oem" filesystem="ext3" boot="oemboot/suse-13.2" installiso="true" bootloader="grub2" kernelcmdline="splash" firmware="efi">
+        <type image="oem" filesystem="ext3" installiso="true" kernelcmdline="splash" firmware="efi">
             <systemdisk>
                 <volume name="usr/lib" size="1G" label="library"/>
                 <volume name="@root" freespace="500M"/>
-                <volume name="etc_volume" mountpoint="etc" copy_on_write="false"/>
+                <volume name="etc_volume" mountpoint="etc" copy_on_write="false" filesystem_check="true"/>
                 <volume name="bin_volume" size="all" mountpoint="/usr/bin"/>
             </systemdisk>
             <oemconfig>

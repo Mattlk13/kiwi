@@ -23,7 +23,7 @@ from kiwi.defaults import Defaults
 from kiwi.utils.command_capabilities import CommandCapabilities
 
 
-class ArchiveTar(object):
+class ArchiveTar:
     """
     **Extraction/Creation of tar archives**
 
@@ -147,7 +147,7 @@ class ArchiveTar(object):
                 source_dir, exclude_list, self.file_list
             )
         else:
-            return ['.'] + self._get_archive_exclude_list(exclude_list)
+            return self._get_archive_exclude_list(exclude_list) + ['.']
 
     def _get_archive_content_list(
         self, source_dir, exclude_list=None, file_list=None

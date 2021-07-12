@@ -15,6 +15,8 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import logging
+
 # project
 from kiwi.volume_manager.base import VolumeManagerBase
 from kiwi.command import Command
@@ -22,11 +24,12 @@ from kiwi.mount_manager import MountManager
 from kiwi.storage.mapped_device import MappedDevice
 from kiwi.filesystem import FileSystem
 from kiwi.path import Path
-from kiwi.logger import log
 
 from kiwi.exceptions import (
     KiwiVolumeGroupConflict
 )
+
+log = logging.getLogger('kiwi')
 
 
 class VolumeManagerLVM(VolumeManagerBase):
@@ -47,13 +50,17 @@ class VolumeManagerLVM(VolumeManagerBase):
             self.custom_args = {}
         if 'root_label' not in self.custom_args:
             self.custom_args['root_label'] = 'ROOT'
-        if 'image_type' not in self.custom_args:
-            self.custom_args['image_type'] = None
+        if 'resize_on_boot' not in self.custom_args:
+            self.custom_args['resize_on_boot'] = False
 
         if self.custom_filesystem_args['mount_options']:
             self.mount_options = self.custom_filesystem_args['mount_options'][0]
         else:
             self.mount_options = 'defaults'
+
+        self.lvm_tool_options = [
+            '--config', 'devices/external_device_info_source=none'
+        ]
 
     def get_device(self):
         """
@@ -67,13 +74,18 @@ class VolumeManagerLVM(VolumeManagerBase):
         """
         device_map = {}
         for volume_name, volume_node in list(self.volume_map.items()):
-            if volume_name == 'LVRoot':
-                # LVRoot volume device takes precedence over the
+            if self._is_root_volume(volume_name):
+                # root volume device takes precedence over the
                 # root partition device from the disk. Therefore use
                 # the same key to put them on the same level
                 volume_name = 'root'
+            if self._is_swap_volume(volume_name):
+                # swap volume device takes precedence over the
+                # swap partition device from the disk. Therefore use
+                # the same key to put them on the same level
+                volume_name = 'swap'
             device_map[volume_name] = MappedDevice(
-                device=volume_node, device_provider=self
+                device=volume_node, device_provider=self.device_provider_root
             )
         return device_map
 
@@ -97,15 +109,22 @@ class VolumeManagerLVM(VolumeManagerBase):
             'Creating volume group %s', volume_group_name
         )
         Command.run(
-            command=['vgremove', '--force', volume_group_name],
-            raise_on_error=False
+            command=['vgremove'] + self.lvm_tool_options + [
+                '--force', volume_group_name
+            ], raise_on_error=False
         )
-        Command.run(['pvcreate', self.device])
-        Command.run(['vgcreate', volume_group_name, self.device])
+        Command.run(
+            ['pvcreate'] + self.lvm_tool_options + [self.device]
+        )
+        Command.run(
+            ['vgcreate'] + self.lvm_tool_options + [
+                volume_group_name, self.device
+            ]
+        )
         self.volume_group = volume_group_name
 
     @staticmethod
-    def _create_volume_no_zero(lvcreate_args):
+    def _create_volume_no_zero(lvm_tool_options, lvcreate_args):
         """
         Create an LV using specified arguments to lvcreate
 
@@ -127,13 +146,13 @@ class VolumeManagerLVM(VolumeManagerBase):
             '--> running "lvcreate -Zn %s"', " ".join(lvcreate_args)
         )
         Command.run(
-            ['lvcreate', '-Zn'] + lvcreate_args
+            ['lvcreate'] + lvm_tool_options + ['-Zn'] + lvcreate_args
         )
         log.debug(
             '--> running "vgscan --mknodes" to create missing nodes'
         )
         Command.run(
-            ['vgscan', '--mknodes']
+            ['vgscan'] + lvm_tool_options + ['--mknodes']
         )
 
     def create_volumes(self, filesystem_name):
@@ -153,13 +172,13 @@ class VolumeManagerLVM(VolumeManagerBase):
         for volume in canonical_volume_list.volumes:
             volume_mbsize = self.get_volume_mbsize(
                 volume, self.volumes, filesystem_name,
-                self.custom_args['image_type']
+                self.custom_args['resize_on_boot']
             )
             log.info(
                 '--> volume %s with %s MB', volume.name, volume_mbsize
             )
             self._create_volume_no_zero(
-                [
+                self.lvm_tool_options, [
                     '-L', format(volume_mbsize), '-n',
                     volume.name, self.volume_group
                 ]
@@ -168,18 +187,19 @@ class VolumeManagerLVM(VolumeManagerBase):
                 self.root_dir, volume
             )
             self._add_to_volume_map(volume.name)
-            self._create_filesystem(
-                volume.name, volume.label, filesystem_name
-            )
-            self._add_to_mount_list(
-                volume.name, volume.realpath
-            )
+            if volume.label != 'SWAP':
+                self._create_filesystem(
+                    volume.name, volume.label, filesystem_name
+                )
+                self._add_to_mount_list(
+                    volume.name, volume.realpath
+                )
 
         if canonical_volume_list.full_size_volume:
             full_size_volume = canonical_volume_list.full_size_volume
             log.info('--> fullsize volume %s', full_size_volume.name)
             self._create_volume_no_zero(
-                [
+                self.lvm_tool_options, [
                     '-l', '+100%FREE', '-n',
                     full_size_volume.name, self.volume_group
                 ]
@@ -219,14 +239,21 @@ class VolumeManagerLVM(VolumeManagerBase):
         """
         fstab_entries = []
         for volume_mount in self.mount_list:
-            if 'LVRoot' not in volume_mount.device:
+            volume_name = self._get_volume_name_from_volume_map(
+                volume_mount.device
+            )
+            if not self._is_root_volume(volume_name):
                 mount_path = '/'.join(volume_mount.mountpoint.split('/')[3:])
+                fs_check = self._is_volume_enabled_for_fs_check(volume_name)
                 if not mount_path.startswith('/'):
                     mount_path = '/' + mount_path
                 fstab_entry = ' '.join(
                     [
                         volume_mount.device, mount_path, filesystem_name,
-                        self.mount_options, '1 2'
+                        self.mount_options,
+                        '0 {fs_passno}'.format(
+                            fs_passno='2' if fs_check else '0'
+                        )
                     ]
                 )
                 fstab_entries.append(fstab_entry)
@@ -277,17 +304,24 @@ class VolumeManagerLVM(VolumeManagerBase):
                     all_volumes_umounted = False
         return all_volumes_umounted
 
+    def _is_volume_enabled_for_fs_check(self, volume_name):
+        for volume in self.volumes:
+            if volume_name == volume.name:
+                if 'enable-for-filesystem-check' in volume.attributes:
+                    return True
+        return False
+
     def _create_filesystem(self, volume_name, volume_label, filesystem_name):
         device_node = self.volume_map[volume_name]
-        if volume_name == 'LVRoot' and not volume_label:
+        if self._is_root_volume(volume_name) and not volume_label:
             # if there is no @root volume definition for the root volume,
             # perform a second lookup of a label specified via the
             # rootfs_label from the type setup
             volume_label = self.custom_args['root_label']
-        filesystem = FileSystem(
+        filesystem = FileSystem.new(
             name=filesystem_name,
             device_provider=MappedDevice(
-                device=device_node, device_provider=self
+                device=device_node, device_provider=self.device_provider_root
             ),
             custom_args=self.custom_filesystem_args
         )
@@ -297,7 +331,7 @@ class VolumeManagerLVM(VolumeManagerBase):
 
     def _add_to_mount_list(self, volume_name, realpath):
         device_node = self.volume_map[volume_name]
-        if volume_name == 'LVRoot':
+        if self._is_root_volume(volume_name):
             # root volume must be first in the list
             self.mount_list.insert(
                 0, MountManager(
@@ -318,6 +352,11 @@ class VolumeManagerLVM(VolumeManagerBase):
             ['/dev/', self.volume_group, '/', volume_name]
         )
 
+    def _get_volume_name_from_volume_map(self, device):
+        for volume_name, volume_path in self.volume_map.items():
+            if volume_path == device:
+                return volume_name
+
     def _volume_group_in_use_on_host_system(self, volume_group_name):
         vgs_call = Command.run(
             [
@@ -334,14 +373,30 @@ class VolumeManagerLVM(VolumeManagerBase):
             # group name, it is considered to be not used
             return False
 
+    def _is_root_volume(self, volume_name):
+        for volume in self.volumes:
+            if volume_name == volume.name and volume.is_root_volume:
+                return True
+
+    def _is_swap_volume(self, volume_name):
+        for volume in self.volumes:
+            if volume_name == volume.name and volume.label == 'SWAP':
+                return True
+
     def __del__(self):
         if self.volume_group:
             log.info('Cleaning up %s instance', type(self).__name__)
             if self.umount_volumes():
                 Path.wipe(self.mountpoint)
                 try:
-                    Command.run(['vgchange', '-an', self.volume_group])
+                    Command.run(
+                        ['vgchange'] + self.lvm_tool_options + [
+                            '-an', self.volume_group
+                        ]
+                    )
                 except Exception:
                     log.warning(
                         'volume group %s still busy', self.volume_group
                     )
+                    return
+        self._cleanup_tempdirs()

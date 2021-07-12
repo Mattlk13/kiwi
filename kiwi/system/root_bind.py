@@ -16,16 +16,18 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
+import logging
 import shutil
-from textwrap import dedent
+import textwrap
+from typing import List
 
 # project
 from kiwi.command import Command
 from kiwi.defaults import Defaults
-from kiwi.logger import log
 from kiwi.path import Path
 from kiwi.mount_manager import MountManager
 from kiwi.utils.checksum import Checksum
+from kiwi.system.root_init import RootInit
 
 from kiwi.exceptions import (
     KiwiMountKernelFileSystemsError,
@@ -33,8 +35,10 @@ from kiwi.exceptions import (
     KiwiSetupIntermediateConfigError
 )
 
+log = logging.getLogger('kiwi')
 
-class RootBind(object):
+
+class RootBind:
     """
     **Implements binding/copying of host system paths
     into the new root directory**
@@ -48,11 +52,11 @@ class RootBind(object):
     :param str shared_location: shared directory between image root and
         build system root
     """
-    def __init__(self, root_init):
+    def __init__(self, root_init: RootInit):
         self.root_dir = root_init.root_dir
-        self.cleanup_files = []
-        self.mount_stack = []
-        self.dir_stack = []
+        self.cleanup_files: List[str] = []
+        self.mount_stack: List[MountManager] = []
+        self.dir_stack: List[str] = []
         # need resolv.conf/hosts for chroot name resolution
         # need /etc/sysconfig/proxy for chroot proxy usage
         self.config_files = [
@@ -70,7 +74,7 @@ class RootBind(object):
         # share the following directory with the host
         self.shared_location = '/' + Defaults.get_shared_cache_location()
 
-    def mount_kernel_file_systems(self):
+    def mount_kernel_file_systems(self) -> None:
         """
         Bind mount kernel filesystems
 
@@ -96,7 +100,20 @@ class RootBind(object):
                 '%s: %s' % (type(e).__name__, format(e))
             )
 
-    def mount_shared_directory(self, host_dir=None):
+    def umount_kernel_file_systems(self) -> None:
+        """
+        Umount kernel filesystems
+
+        :raises KiwiMountKernelFileSystemsError: if some kernel filesystem
+            fails to mount
+        """
+        umounts = [
+            mnt for mnt in self.mount_stack if mnt.device
+            in self.bind_locations
+        ]
+        self._cleanup_mounts(umounts)
+
+    def mount_shared_directory(self, host_dir: str = None) -> None:
         """
         Bind mount shared location
 
@@ -111,7 +128,7 @@ class RootBind(object):
 
         :raises KiwiMountSharedDirectoryError: if mount fails
         """
-        if not host_dir:
+        if host_dir is None:
             host_dir = self.shared_location
         try:
             Path.create(self.root_dir + host_dir)
@@ -128,7 +145,7 @@ class RootBind(object):
                 '%s: %s' % (type(e).__name__, format(e))
             )
 
-    def setup_intermediate_config(self):
+    def setup_intermediate_config(self) -> None:
         """
         Create intermediate config files
 
@@ -161,27 +178,7 @@ class RootBind(object):
                 '%s: %s' % (type(e).__name__, format(e))
             )
 
-    def move_to_root(self, elements):
-        """
-        Change the given path elements to a new root directory
-
-        :param list elements: list of path names
-
-        :return: changed elements
-
-        :rtype: list
-        """
-        result = []
-        for element in elements:
-            normalized_element = os.path.normpath(element)
-            result.append(
-                normalized_element.replace(
-                    os.path.normpath(self.root_dir), os.sep
-                ).replace('{0}{0}'.format(os.sep), os.sep)
-            )
-        return result
-
-    def cleanup(self):
+    def cleanup(self) -> None:
         """
         Cleanup mounted locations, directories and intermediate config files
         """
@@ -202,7 +199,7 @@ class RootBind(object):
 
             checksum = Checksum(config_file)
             if not checksum.matches(checksum.sha256(), shasum_file):
-                message = dedent('''\n
+                message = textwrap.dedent('''\n
                     Modifications to intermediate config file detected
 
                     The file: {0}
@@ -228,19 +225,48 @@ class RootBind(object):
 
         # delete stale symlinks if there are any. normally the package
         # installation process should have replaced the symlinks with
-        # real files from the packages
-        for config in self.config_files:
-            if os.path.islink(self.root_dir + config):
-                config_files_to_delete.append(self.root_dir + config)
-
+        # real files from the packages. On deletion check for the
+        # presence of a config file template and restore it
         try:
+            for config in self.config_files:
+                config_file = self.root_dir + config
+                if os.path.islink(config_file):
+                    Command.run(['rm', '-f', config_file])
+                    self._restore_config_template(config_file)
+
             Command.run(['rm', '-f'] + config_files_to_delete)
-        except Exception as e:
+        except Exception as issue:
             log.warning(
-                'Failed to remove intermediate config files: %s', format(e)
+                'Failed to cleanup intermediate config files: {0}'.format(issue)
             )
 
         self._restore_intermediate_config_rpmnew_variants()
+
+    def _restore_config_template(self, config_file):
+        """
+        Systems that use configuration templates and a tool to
+        manage them might have skipped their call due to the
+        presence of intermediate host config files in the new
+        root tree. In this case if no custom file was provided
+        the template file is used to restore the system standard
+        configuration file
+        """
+        template_map = {
+            self.root_dir + '/etc/sysconfig/proxy': 'sysconfig.proxy'
+        }
+        template_dirs = [
+            self.root_dir + '/var/adm/fillup-templates',
+            self.root_dir + '/usr/share/fillup-templates'
+        ]
+        if template_map.get(config_file):
+            for template_dir in template_dirs:
+                template_file = os.sep.join(
+                    [template_dir, template_map.get(config_file)]
+                )
+                if os.path.exists(template_file):
+                    Command.run(
+                        ['cp', template_file, config_file]
+                    )
 
     def _restore_intermediate_config_rpmnew_variants(self):
         """
@@ -255,25 +281,28 @@ class RootBind(object):
 
                 shutil.move(config_rpm_new, self.root_dir + config)
 
-    def _cleanup_mount_stack(self):
-        for mount in reversed(self.mount_stack):
-            if mount.is_mounted():
+    def _cleanup_mounts(self, umounts):
+        for umount in reversed(umounts):
+            if umount.is_mounted():
                 try:
-                    mount.umount_lazy()
+                    umount.umount_lazy()
+                    self.mount_stack.remove(umount)
                 except Exception as e:
                     log.warning(
                         'Image root directory %s not cleanly umounted: %s',
                         self.root_dir, format(e)
                     )
             else:
-                log.warning('Path %s not a mountpoint', mount.mountpoint)
+                log.warning('Path %s not a mountpoint', umount.mountpoint)
 
+    def _cleanup_mount_stack(self):
+        self._cleanup_mounts(self.mount_stack)
         del self.mount_stack[:]
 
     def _cleanup_dir_stack(self):
         for location in reversed(self.dir_stack):
             try:
-                Path.remove_hierarchy(self.root_dir + location)
+                Path.remove_hierarchy(root=self.root_dir, path=location)
             except Exception as e:
                 log.warning(
                     'Failed to remove directory hierarchy {0}: {1}'.format(

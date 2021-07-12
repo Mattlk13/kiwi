@@ -16,16 +16,17 @@
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
 import os
-import platform
+import logging
 
 # project
 from kiwi.bootloader.config.base import BootLoaderConfigBase
 from kiwi.bootloader.template.isolinux import BootLoaderTemplateIsoLinux
-from kiwi.logger import log
 from kiwi.path import Path
 from kiwi.defaults import Defaults
 
 from kiwi.exceptions import KiwiTemplateError
+
+log = logging.getLogger('kiwi')
 
 
 class BootLoaderConfigIsoLinux(BootLoaderConfigBase):
@@ -39,9 +40,7 @@ class BootLoaderConfigIsoLinux(BootLoaderConfigBase):
         :param dict custom_args: custom isolinux config arguments
         """
         self.custom_args = custom_args
-        self.arch = platform.machine()
-        if self.arch == 'i686' or self.arch == 'i586':
-            self.arch = 'ix86'
+        self.arch = Defaults.get_platform_name()
 
         self.install_volid = self.xml_state.build_type.get_volid() or \
             Defaults.get_install_volume_id()
@@ -70,7 +69,7 @@ class BootLoaderConfigIsoLinux(BootLoaderConfigBase):
                     self.xml_state.build_type.get_hybridpersistent_filesystem()
                 )
 
-        self.terminal = self.xml_state.build_type.get_bootloader_console()
+        self.terminal = self.xml_state.get_build_type_bootloader_console()
         self.gfxmode = self.get_gfxmode('isolinux')
         # isolinux counts the timeout in units of 1/10 sec
         self.timeout = self.get_boot_timeout_seconds() * 10

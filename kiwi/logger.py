@@ -15,233 +15,35 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+from typing import (
+    Dict, Optional
+)
 import logging
 import sys
 
 # project
-from .exceptions import (
-    KiwiLogFileSetupFailed
+from kiwi.logger_color_formatter import ColorFormatter
+from kiwi.logger_filter import (
+    LoggerSchedulerFilter,
+    InfoFilter,
+    DebugFilter,
+    ErrorFilter,
+    WarningFilter
 )
 
-
-class ColorMessage(object):
-    """
-    **Implements color messages for Python logging facility**
-
-    Has to implement the format_message method to serve as
-    message formatter
-    """
-    def __init__(self):
-        BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = list(range(8))
-        self.color = {
-            'BLACK': BLACK,
-            'WARNING': YELLOW,
-            'INFO': WHITE,
-            'DEBUG': WHITE,
-            'CRITICAL': YELLOW,
-            'ERROR': RED,
-            'RED': RED,
-            'GREEN': GREEN,
-            'YELLOW': YELLOW,
-            'BLUE': BLUE,
-            'MAGENTA': MAGENTA,
-            'CYAN': CYAN,
-            'WHITE': WHITE
-        }
-        self.esc = {
-            'reset': '\033[0m',
-            'color': '\033[3;%dm',
-            'color_light': '\033[2;%dm',
-            'bold': '\033[1m'
-        }
-
-    def format_message(self, level, message):
-        """
-        Message formatter with support for embedded color sequences
-
-        The Message is allowed to contain the following color metadata:
-
-        * $RESET, reset to no color mode
-        * $BOLD, bold
-        * $COLOR, color the following text
-        * $LIGHTCOLOR, light color the following text
-
-        The color of the message depends on the level and is defined
-        in the ColorMessage constructor
-
-        :param int level: color level number
-        :param string message: text
-
-        :return: color message with escape sequences
-
-        :rtype: str
-        """
-        message = message.replace(
-            '$RESET',
-            self.esc['reset']
-        ).replace(
-            '$BOLD',
-            self.esc['bold']
-        ).replace(
-            '$COLOR',
-            self.esc['color'] % (30 + self.color[level])
-        ).replace(
-            '$LIGHTCOLOR',
-            self.esc['color_light'] % (30 + self.color[level])
-        )
-        for color_name, color_id in list(self.color.items()):
-            message = message.replace(
-                '$' + color_name,
-                self.esc['color'] % (color_id + 30)
-            ).replace(
-                '$BG' + color_name,
-                self.esc['color'] % (color_id + 40)
-            ).replace(
-                '$BG-' + color_name,
-                self.esc['color'] % (color_id + 40)
-            )
-        return message + self.esc['reset']
-
-
-class ColorFormatter(logging.Formatter):
-    """
-    **Extended standard logging Formatter**
-
-    Extended format supporting text with color metadata
-
-    Example:
-
-    .. code:: python
-
-        ColorFormatter(message_format, '%H:%M:%S')
-    """
-    def __init__(self, *args, **kwargs):
-        # can't do super(...) here because Formatter is an old school class
-        logging.Formatter.__init__(self, *args, **kwargs)
-
-    def format(self, record):
-        """
-        Creates a logging Formatter with support for color messages
-
-        :param tuple record: logging message record
-
-        :return: result from format_message
-        :rtype: str
-        """
-        color = ColorMessage()
-        levelname = record.levelname
-        message = logging.Formatter.format(self, record)
-        return color.format_message(levelname, message)
-
-
-class LoggerSchedulerFilter(logging.Filter):
-    """
-    **Extended standard logging Filter**
-    """
-    def filter(self, record):
-        """
-        Messages from apscheduler scheduler instances are filtered out
-        They conflict with console progress information
-
-        :param tuple record: logging message record
-
-        :return: record.name
-
-        :rtype: str
-        """
-        ignorables = [
-            'apscheduler.scheduler',
-            'apscheduler.executors.default'
-        ]
-        return record.name not in ignorables
-
-
-class InfoFilter(logging.Filter):
-    """
-    **Extended standard logging Filter**
-    """
-    def filter(self, record):
-        """
-        Only messages with record level INFO and WARNING can pass
-        for messages with another level an extra handler is used
-
-        :param tuple record: logging message record
-
-        :return: record.name
-
-        :rtype: str
-        """
-        if record.levelno == logging.INFO:
-            return True
-
-
-class DebugFilter(logging.Filter):
-    """
-    **Extended standard debug logging Filter**
-    """
-    def filter(self, record):
-        """
-        Only messages with record level DEBUG can pass
-        for messages with another level an extra handler is used
-
-        :param tuple record: logging message record
-
-        :return: record.name
-
-        :rtype: str
-        """
-        if record.levelno == logging.DEBUG:
-            return True
-
-
-class ErrorFilter(logging.Filter):
-    """
-    **Extended standard error logging Filter**
-    """
-    def filter(self, record):
-        """
-        Only messages with record level DEBUG can pass
-        for messages with another level an extra handler is used
-
-        :param tuple record: logging message record
-
-        :return: record.name
-
-        :rtype: str
-        """
-        if record.levelno == logging.ERROR:
-            return True
-
-
-class WarningFilter(logging.Filter):
-    """
-    **Extended standard warning logging Filter**
-    """
-    def filter(self, record):
-        """
-        Only messages with record level WARNING can pass
-        for messages with another level an extra handler is used
-
-        :param tuple record: logging message record
-
-        :return: record.name
-
-        :rtype: str
-        """
-        if record.levelno == logging.WARNING:
-            return True
+from kiwi.exceptions import KiwiLogFileSetupFailed
 
 
 class Logger(logging.Logger):
     """
     **Extended logging facility based on Python logging**
 
-    :param string name: name of the logger
+    :param str name: name of the logger
     """
-    def __init__(self, name):
+    def __init__(self, name: str):
         logging.Logger.__init__(self, name)
-        self.console_handlers = {}
-        self.logfile = None
+        self.console_handlers: Dict = {}
+        self.logfile: Optional[str] = None
         # log INFO to stdout
         self._add_stream_handler(
             'info',
@@ -269,7 +71,7 @@ class Logger(logging.Logger):
         )
         self.log_level = self.level
 
-    def getLogLevel(self):
+    def getLogLevel(self) -> int:
         """
         Return currently used log level
 
@@ -279,7 +81,7 @@ class Logger(logging.Logger):
         """
         return self.log_level
 
-    def setLogLevel(self, level):
+    def setLogLevel(self, level: int) -> None:
         """
         Set custom log level for all console handlers
 
@@ -289,7 +91,7 @@ class Logger(logging.Logger):
         for handler_type in self.console_handlers:
             self.console_handlers[handler_type].setLevel(level)
 
-    def set_color_format(self):
+    def set_color_format(self) -> None:
         """
         Set color format for all console handlers
         """
@@ -307,11 +109,11 @@ class Logger(logging.Logger):
                     ColorFormatter(message_format, '%H:%M:%S')
                 )
 
-    def set_logfile(self, filename):
+    def set_logfile(self, filename: str) -> None:
         """
         Set logfile handler
 
-        :param string filename: logfile file path
+        :param str filename: logfile file path
         """
         try:
             logfile = logging.FileHandler(
@@ -330,7 +132,7 @@ class Logger(logging.Logger):
                 '%s: %s' % (type(e).__name__, format(e))
             )
 
-    def get_logfile(self):
+    def get_logfile(self) -> Optional[str]:
         """
         Return file path name of logfile
 
@@ -340,7 +142,10 @@ class Logger(logging.Logger):
         """
         return self.logfile
 
-    def progress(self, current, total, prefix, bar_length=40):
+    @staticmethod
+    def progress(
+        current: int, total: int, prefix: str, bar_length: int = 40
+    ) -> None:
         """
         Custom progress log information. progress information is
         intentionally only logged to stdout and will bypass any
@@ -380,17 +185,3 @@ class Logger(logging.Logger):
             handler.addFilter(rule)
         self.addHandler(handler)
         self.console_handlers[handler_type] = handler
-
-
-# Create an application global log instance
-#
-# Set the highest log level possible as the default log level
-# in the main Logger class. This is needed to allow any logfile
-# handler to log all messages by default and to allow custom log
-# levels per handler. Our own implementation in Logger::setLogLevel
-# will then set the log level on a handler basis
-
-logging.setLoggerClass(Logger)
-log = logging.getLogger("kiwi")
-
-log.setLevel(logging.DEBUG)

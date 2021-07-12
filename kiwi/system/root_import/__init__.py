@@ -15,13 +15,21 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import logging
+import importlib
+from abc import (
+    ABCMeta,
+    abstractmethod
+)
+
 # project
-from kiwi.system.root_import.oci import RootImportOCI
+from kiwi.system.uri import Uri
 from kiwi.exceptions import KiwiRootImportError
-from kiwi.logger import log
+
+log = logging.getLogger('kiwi')
 
 
-class RootImport(object):
+class RootImport(metaclass=ABCMeta):
     """
     Root import factory
 
@@ -31,29 +39,45 @@ class RootImport(object):
         root directory path name
 
     * :attr:`image_uri`
-        a uri to an image containing a the root system
+        an instance of :class:`Uri` to an image containing a the root system
 
     * :attr:`image_type`
         type of the image to import
     """
-    def __new__(self, root_dir, image_uri, image_type):
+    @abstractmethod
+    def __init__(self) -> None:
+        return None  # pragma: no cover
+
+    @staticmethod
+    def new(root_dir: str, image_uri: Uri, image_type: str):
+        name_map = {
+            'docker': 'OCI',
+            'oci': 'OCI'
+        }
         log.info(
             'Importing root from a {0} image type'.format(image_type)
         )
-        if image_type == 'docker':
-            root_import = RootImportOCI(
-                root_dir, image_uri,
-                custom_args={'archive_transport': 'docker-archive'}
+        (custom_args, module_namespace) = \
+            RootImport._custom_args_for_root_import(image_type)
+        try:
+            rootimport = importlib.import_module(
+                'kiwi.system.root_import.{0}'.format(module_namespace)
             )
-        elif image_type == 'oci':
-            root_import = RootImportOCI(
-                root_dir, image_uri,
-                custom_args={'archive_transport': 'oci-archive'}
+            module_name = 'RootImport{0}'.format(name_map[module_namespace])
+            return rootimport.__dict__[module_name](
+                root_dir, image_uri, custom_args
             )
-        else:
+        except Exception as issue:
             raise KiwiRootImportError(
-                'Support to import {0} images not implemented'.format(
-                    image_type
+                'Support to import {0} images not implemented: {1}'.format(
+                    image_type, issue
                 )
             )
-        return root_import
+
+    @staticmethod
+    def _custom_args_for_root_import(image_type: str):
+        if image_type == 'docker':
+            custom_args = {'archive_transport': 'docker-archive'}
+        else:
+            custom_args = {'archive_transport': 'oci-archive'}
+        return [custom_args, 'oci']

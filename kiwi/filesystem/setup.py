@@ -15,13 +15,17 @@
 # You should have received a copy of the GNU General Public License
 # along with kiwi.  If not, see <http://www.gnu.org/licenses/>
 #
+import logging
+
 # project
 from kiwi.system.size import SystemSize
-from kiwi.logger import log
 from kiwi.defaults import Defaults
+from kiwi.xml_state import XMLState
+
+log = logging.getLogger('kiwi')
 
 
-class FileSystemSetup(object):
+class FileSystemSetup:
     """
     **Implement filesystem setup methods**
 
@@ -32,7 +36,7 @@ class FileSystemSetup(object):
     :param object xml_state: Instance of XMLState
     :param string root_dir: root directory path
     """
-    def __init__(self, xml_state, root_dir):
+    def __init__(self, xml_state: XMLState, root_dir: str):
         self.configured_size = xml_state.get_build_type_size(
             include_unpartitioned=True
         )
@@ -47,7 +51,7 @@ class FileSystemSetup(object):
         else:
             self.requested_filesystem = xml_state.build_type.get_filesystem()
 
-    def get_size_mbytes(self, filesystem=None):
+    def get_size_mbytes(self, filesystem: str = None) -> int:
         """
         Precalculate the requires size in mbytes to store all data
         from the root directory in the requested filesystem. Return
@@ -60,9 +64,10 @@ class FileSystemSetup(object):
 
         :rtype: int
         """
+        fstype = self.requested_filesystem if not filesystem else filesystem
         root_dir_mbytes = self.size.accumulate_mbyte_file_sizes()
         filesystem_mbytes = self.size.customize(
-            root_dir_mbytes, self.requested_filesystem or filesystem
+            root_dir_mbytes, fstype
         )
 
         if not self.configured_size:
